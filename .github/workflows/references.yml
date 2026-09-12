@@ -1,0 +1,27 @@
+name: Pinned compiler reference sources
+on:
+  push:
+    paths: ['.github/workflows/references.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  references:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Fetch exact reference revisions
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir references
+          git clone https://github.com/Spaceghost/codin.git references/codin
+          git -C references/codin checkout --detach 5cd28a63023c24079f16e9a51a0140501cebdfa2
+          git clone https://github.com/Spaceghost/Thor.git references/Thor
+          git -C references/Thor checkout --detach c9665a453aeaab31ec728d2d9c3172f41b52b87b
+          tar -czf references.tar.gz references
+      - uses: actions/upload-artifact@v4
+        with:
+          name: compiler-reference-sources
+          path: references.tar.gz
+          retention-days: 3
