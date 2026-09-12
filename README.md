@@ -2,7 +2,7 @@
 
 Bor is an Odin-to-C compiler written in Odin.
 
-The executable is `bor`. The repository is deliberately built around the current Odin toolchain instead of carrying a second language front end around forever.
+The executable is `bor`. Bor deliberately builds on the current Odin toolchain instead of carrying a second Odin grammar around until everyone involved forgets why there are two parsers.
 
 ## Architecture
 
@@ -13,66 +13,129 @@ Odin source
 core:odin/parser + core:odin/ast   <- syntax authority
     |
     v
-Bor semantic normalization / MIR  <- Bor owns meaning from here
+Bor semantic lowering
     |
-    v
-strict readable C99
-    |
-    +--> GCC
-    +--> Clang
-    +--> Zig cc / cross targets
+    +------------------------------+
+    |                              |
+    v                              v
+flat MIR                      direct AST lane
+(values / blocks / ops)       (shootout control)
+    |                              |
+    v                              v
+goto-based unity C99          structured C99
+    |                              |
+    +-------------+----------------+
+                  |
+          GCC / Clang / Zig cc
 ```
 
-Bor uses the parser and AST shipped with Odin itself. It does **not** maintain a separate Odin grammar or parser.
+`bor emit-c` uses the **flat MIR backend**. `bor emit-c-direct` keeps the smaller direct AST-to-C backend alive as a permanent control. `bor emit-c-mir` names the product backend explicitly.
 
-The project has two historical/reference compilers:
+Bor uses `core:odin/parser` and `core:odin/ast` shipped with Odin itself. It does **not** maintain a separate Odin parser.
 
-- **Thor** (`graphitemaster/Thor`, with `Spaceghost/Thor` as the working fork) is the modern architectural reference. Its data-oriented AST and planned middle-IR direction are useful guidance.
-- **Codin** (`graphitemaster/codin`, with `Spaceghost/codin` as the executable fork) is the behavioral oracle for the C99 work already proven during the melodica shootout.
+The project also keeps two historical/reference compilers in the shootout:
 
-We port behavior and tests, not old implementation baggage.
+- **Thor** (`graphitemaster/Thor`, with `Spaceghost/Thor` as the working fork) is the modern architectural reference. Its data-oriented AST and middle-IR direction are useful guidance.
+- **Codin** (`graphitemaster/codin`, with `Spaceghost/codin` as the executable fork) is a behavioral oracle for the strict-C99 work proven during the melodica experiments.
+
+We port behavior and tests, not implementation sediment.
+
+## Flat MIR
+
+The MIR is intentionally boring data:
+
+- integer `Proc_ID`, `Block_ID`, and `Value_ID` handles;
+- dense module arrays for procedures, blocks, values, instructions, globals, and call arguments;
+- procedures own contiguous ranges of blocks, instructions, values, and parameters;
+- blocks own contiguous instruction ranges;
+- one fixed-layout enum-backed `MIR_Inst` record;
+- explicit `Jump` / `Jump_If_False` control flow;
+- short-circuit boolean expressions and loops become real basic blocks before C emission;
+- the C backend does not need to understand Odin's AST.
+
+The unity C emitter is therefore a sequential pass over dense arrays. Complex Odin control flow is emitted as predictable labels and `goto`s, leaving ordinary C optimizers a simple control-flow graph.
 
 ## Verification rule
 
 Every supported language feature must earn its way in through executable evidence:
 
 1. Parse with Odin's own tooling parser.
-2. Emit deterministic strict `-std=c99 -pedantic-errors` C.
-3. Compile the generated C with GCC and Clang.
-4. Compare observable behavior with native Odin.
-5. Where useful, compare against Codin and Thor too.
-6. If an upstream project has weak/no tests, characterize the reference implementation by source inspection plus instrumentable differential behavior instead of inventing expected semantics.
+2. Lower unsupported AST shapes **loudly** instead of guessing.
+3. Emit deterministic strict `-std=c99 -pedantic-errors` C.
+4. Compile both Bor backends with GCC and Clang under `-Wall -Wextra -Werror`.
+5. Compare observable behavior with native Odin.
+6. Compare the same fixture with Codin and Thor when useful.
+7. If an upstream project has weak/no tests, characterize the real reference implementation using source plus instrumentable differential behavior rather than inventing expected semantics.
+8. Keep performance claims behind repeatable shootouts.
 
-That last rule came out of the libpiano compatibility work: executable behavior is a better oracle than nostalgia.
+That last pair of rules came out of the libpiano compatibility work. Executable behavior is a considerably better oracle than archaeology conducted with confidence.
+
+## First backend shootout
+
+The first shared acceptance workload is melodica's binary-safe URL encoder. All lanes produce the same ABI behavior and the benchmark verifies the same deterministic sink (`667156061`). A GitHub-hosted run produced:
+
+| lane | runtime median | generated C | GCC executable |
+|---|---:|---:|---:|
+| Bor direct → GCC | 541.96 MiB/s | 1,879 B | 3,328 B |
+| **Bor MIR → GCC** | **552.81 MiB/s** | 5,796 B | **3,280 B** |
+| Bor direct → Clang | 556.17 MiB/s | 1,879 B | 3,398 B |
+| **Bor MIR → Clang** | **589.61 MiB/s** | 5,796 B | 3,398 B |
+| native Odin | 561.50 MiB/s | — | — |
+| Codin → GCC | 543.76 MiB/s | 1,868 B | 3,328 B |
+
+Compiler-side measurements on the same runner:
+
+| operation | direct | MIR | Codin |
+|---|---:|---:|---:|
+| 40 parse+emit+write invocations | 0.03 s | 0.03 s | 0.28 s |
+| 25 GCC `-O3` C compilations | 0.74 s | 0.85 s | 0.74 s |
+| emitter peak RSS | 4.4 MiB | 4.6 MiB | 14.7 MiB |
+
+The MIR output is currently about 3× larger as text and costs GCC roughly 15% more frontend time on this tiny fixture, but it won runtime under both GCC and Clang, tied Clang's final size, produced the smallest GCC binary, and did not measurably slow Bor's own emission. That earned it the default. The direct lane remains in CI because one benchmark is evidence, not scripture.
 
 ## Current executable slice
 
-The bootstrap backend already lowers the melodica URL-encoding acceptance fixture through `core:odin/parser`. The slice covers:
+The bootstrap language slice covers:
 
 - `u8`, `u32`, `uintptr`, `bool`
 - `[^]u8`
 - `proc "c"` and `proc "contextless"`
+- `@(export)` linkage as a semantic property in MIR
 - scalar casts
-- calls, indexing, unary/binary expressions
-- local declarations and inference for the exercised subset
-- assignments
+- direct calls and indexing
+- unary and binary expressions
+- short-circuit `&&` / `||`
+- local declarations and basic inferred locals
+- assignments and indexed stores
 - `if` / `else`
 - bounded `for i in a..<b` and `..=` ranges
 - returns
 
-Unsupported AST shapes fail loudly. They are not guessed.
-
 ```sh
 make test
+make bench
 
-# or directly
 odin build src -out:build/bor -o:speed
 ./build/bor emit-c test/melodica -o build/melodica.c
-cc -std=c99 -pedantic-errors -Wall -Wextra -Werror build/melodica.c test/c99/smoke.c
+cc -std=c99 -pedantic-errors -Wall -Wextra -Werror -O3 \
+  build/melodica.c test/c99/smoke.c
 ```
 
 ## Direction
 
-Next, the bootstrap AST-to-C lowering gets split cleanly into semantic normalization and a compact MIR. Then the feature ladder proceeds under the same shootout: structs, arrays, enums, slices/strings, multiple returns, defer, unions, imports, generics, and finally the broader Odin/runtime surface.
+The next feature ladder stays under the same dual-backend shootout:
 
-The target is not merely "Odin that happens to compile to C." Bor should emit small, readable C, cross-compile easily, have useful diagnostics, and remain inspectable enough that a compiler engineer can understand why the output exists without performing an archaeological dig.
+1. structs
+2. fixed arrays
+3. enums
+4. slices / strings
+5. multiple returns
+6. `defer`
+7. unions
+8. imports / package-qualified names
+9. generics / monomorphization
+10. the broader Odin and runtime surface
+
+The MIR type system will grow as dense tables and IDs rather than recursive compiler-object graphs. Cross-target C compilation, deterministic MIR dumps, sanitizer builds, differential fixtures, and compile/runtime scorecards belong in CI as the language surface expands.
+
+The target is not merely “Odin that happens to compile to C.” Bor should emit portable C, cross-compile almost offensively easily, produce useful diagnostics, remain inspectable, and give C optimizers enough simple structure to do excellent work without requiring the reader to decode a compiler's emotional state.
