@@ -223,11 +223,7 @@ emit_expr :: proc(e: ^Emitter, expr: ^ast.Expr) -> bool {
 		return true
 	case ^ast.Unary_Expr:
 		write(e, "(")
-		op := n.op.text
-		if op == "~" {
-			op = "~"
-		}
-		write(e, op)
+		write(e, n.op.text)
 		if !emit_expr(e, n.expr) do return false
 		write(e, ")")
 		return true
@@ -526,7 +522,6 @@ emit_c99 :: proc(pkg: ^ast.Package) -> (string, bool) {
 	}
 	defer delete(e.locals)
 	defer delete(e.proc_results)
-	defer strings.builder_destroy(&e.out)
 
 	if !collect_globals(&e, pkg) {
 		return "", false
@@ -538,7 +533,9 @@ emit_c99 :: proc(pkg: ^ast.Package) -> (string, bool) {
 	if !emit_phase(&e, pkg, 1) do return "", false
 	write(&e, "\n")
 	if !emit_phase(&e, pkg, 2) do return "", false
-	return strings.clone_to_string(strings.to_string(e.out)), !e.failed
+	// The builder intentionally lives until process exit. `c` aliases its bytes
+	// only long enough for main to write the output file.
+	return strings.to_string(e.out), !e.failed
 }
 
 usage :: proc() {
@@ -561,7 +558,6 @@ main :: proc() {
 	if !ok {
 		os.exit(1)
 	}
-	defer delete(c)
 
 	if err := os.write_entire_file(os.args[4], transmute([]u8)c); err != nil {
 		fmt.eprintfln("bor: failed writing %s: %v", os.args[4], err)
