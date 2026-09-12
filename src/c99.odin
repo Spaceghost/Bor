@@ -236,7 +236,7 @@ emit_expr :: proc(e: ^Emitter, expr: ^ast.Expr) -> bool {
 			write(e, ")")
 		} else {
 			write(e, " ")
-			write(e, n.op.text)
+			write(e, n.op.text == "~" ? "^" : n.op.text)
 			write(e, " ")
 			if !emit_expr(e, n.right) do return false
 		}
@@ -339,7 +339,7 @@ emit_stmt :: proc(e: ^Emitter, stmt: ^ast.Stmt) -> bool {
 		indent(e)
 		if !emit_expr(e, n.lhs[0]) do return false
 		write(e, " ")
-		write(e, n.op.text)
+		write(e, n.op.text == "~=" ? "^=" : n.op.text)
 		write(e, " ")
 		if !emit_expr(e, n.rhs[0]) do return false
 		write(e, ";\n")
