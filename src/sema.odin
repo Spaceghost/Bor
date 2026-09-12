@@ -94,6 +94,7 @@ normalize_mir_semantics :: proc(pkg: ^ast.Package, m: ^MIR_Module) -> bool {
 					p.external = decl_is_exported(d)
 					break
 				}
+			}
 		}
 	}
 
