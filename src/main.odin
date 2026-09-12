@@ -6,7 +6,7 @@ import "core:odin/parser"
 import "core:os"
 
 usage :: proc() {
-	fmt.eprintln("usage: bor <emit-c|emit-c-direct|emit-c-mir> <odin-package-directory> -o <output.c>")
+	fmt.eprintln("usage: bor <emit-c|emit-c-direct|emit-c-mir|dump-mir> <odin-package-directory> -o <output>")
 }
 
 decl_is_exported :: proc(d: ^ast.Value_Decl) -> bool {
@@ -65,7 +65,7 @@ main :: proc() {
 	}
 
 	command := os.args[1]
-	if command != "emit-c" && command != "emit-c-direct" && command != "emit-c-mir" {
+	if command != "emit-c" && command != "emit-c-direct" && command != "emit-c-mir" && command != "dump-mir" {
 		usage()
 		os.exit(2)
 	}
@@ -81,12 +81,17 @@ main :: proc() {
 
 	// The MIR lane won the first correctness/size/runtime shootout, so it is the
 	// product default. The direct lane remains available as an always-on control.
-	if command == "emit-c" || command == "emit-c-mir" {
+	if command == "emit-c" || command == "emit-c-mir" || command == "dump-mir" {
 		m, lowered := lower_package_to_mir(pkg)
 		defer mir_destroy(&m)
 		if !lowered do os.exit(1)
 		apply_mir_export_linkage(&m, pkg)
-		generated, emitted = emit_mir_c99(&m)
+		if command == "dump-mir" {
+			generated = mir_dump(&m)
+			emitted = true
+		} else {
+			generated, emitted = emit_mir_c99(&m)
+		}
 	} else {
 		normalize_direct_export_linkage(pkg)
 		generated, emitted = emit_c99(pkg)
