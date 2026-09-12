@@ -34,6 +34,9 @@ jobs:
       - name: Build Bor and prove both strict C99 backends
         run: make test
 
+      - name: Benchmark Bor runtime lanes and native Odin
+        run: make bench
+
       - name: Build Codin oracle
         shell: bash
         run: |
@@ -44,6 +47,9 @@ jobs:
           "$RUNNER_TEMP/codin/codin" emit-c "$GITHUB_WORKSPACE/test/melodica" -o "$RUNNER_TEMP/codin.c"
           gcc -std=c99 -pedantic-errors -Wall -Wextra -Werror -O3 "$RUNNER_TEMP/codin.c" test/c99/smoke.c -o "$RUNNER_TEMP/codin-smoke"
           "$RUNNER_TEMP/codin-smoke"
+          gcc -std=c99 -pedantic-errors -Wall -Wextra -Werror -O3 "$RUNNER_TEMP/codin.c" test/c99/bench.c -o "$RUNNER_TEMP/codin-bench"
+          echo '=== Codin / GCC runtime ==='
+          "$RUNNER_TEMP/codin-bench"
 
       - name: Parse the same fixture with modern Thor
         shell: bash
@@ -54,6 +60,46 @@ jobs:
           make -C "$RUNNER_TEMP/thor" -j2 DEBUG=1
           "$RUNNER_TEMP/thor/thor" test/melodica/main.odin > "$RUNNER_TEMP/thor.ast"
           test -s "$RUNNER_TEMP/thor.ast"
+
+      - name: Measure compiler pipeline throughput
+        shell: bash
+        run: |
+          set -euxo pipefail
+          export CODIN_BIN="$RUNNER_TEMP/codin/codin"
+
+          echo '=== 40 complete Odin->C emissions (includes process start, parse, emit, write) ==='
+          /usr/bin/time -f 'Bor-direct-40 real=%e user=%U sys=%S rss=%MKB' sh -c '
+            i=0; while [ "$i" -lt 40 ]; do
+              build/bor emit-c-direct test/melodica -o "$RUNNER_TEMP/timed-direct.c"
+              i=$((i+1))
+            done'
+          /usr/bin/time -f 'Bor-MIR-40 real=%e user=%U sys=%S rss=%MKB' sh -c '
+            i=0; while [ "$i" -lt 40 ]; do
+              build/bor emit-c-mir test/melodica -o "$RUNNER_TEMP/timed-mir.c"
+              i=$((i+1))
+            done'
+          /usr/bin/time -f 'Codin-40 real=%e user=%U sys=%S rss=%MKB' sh -c '
+            i=0; while [ "$i" -lt 40 ]; do
+              "$CODIN_BIN" emit-c "$GITHUB_WORKSPACE/test/melodica" -o "$RUNNER_TEMP/timed-codin.c"
+              i=$((i+1))
+            done'
+
+          echo '=== 25 GCC -O3 translation-only compiles ==='
+          /usr/bin/time -f 'GCC-direct-25 real=%e user=%U sys=%S rss=%MKB' sh -c '
+            i=0; while [ "$i" -lt 25 ]; do
+              gcc -std=c99 -pedantic-errors -O3 -c build/direct-melodica.c -o "$RUNNER_TEMP/direct.o"
+              i=$((i+1))
+            done'
+          /usr/bin/time -f 'GCC-MIR-25 real=%e user=%U sys=%S rss=%MKB' sh -c '
+            i=0; while [ "$i" -lt 25 ]; do
+              gcc -std=c99 -pedantic-errors -O3 -c build/mir-melodica.c -o "$RUNNER_TEMP/mir.o"
+              i=$((i+1))
+            done'
+          /usr/bin/time -f 'GCC-Codin-25 real=%e user=%U sys=%S rss=%MKB' sh -c '
+            i=0; while [ "$i" -lt 25 ]; do
+              gcc -std=c99 -pedantic-errors -O3 -c "$RUNNER_TEMP/codin.c" -o "$RUNNER_TEMP/codin.o"
+              i=$((i+1))
+            done'
 
       - name: Shootout report
         shell: bash
