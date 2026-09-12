@@ -105,9 +105,6 @@ emit_mir_proc_head :: proc(b: ^strings.Builder, m: ^MIR_Module, proc_id: int, pr
 emit_mir_inst :: proc(b: ^strings.Builder, m: ^MIR_Module, proc_id: int, op: ^MIR_Inst) -> bool {
 	#partial switch op.kind {
 	case .Label:
-		// A block that is reached only by linear fallthrough needs no C label.
-		// Avoiding decorative labels keeps -Wall -Werror clean and the unity
-		// output smaller. Every explicit jump increments `incoming` in lowering.
 		if m.blocks[int(op.target)].incoming == 0 do return true
 		write_block_label(b, proc_id, op.target)
 		strings.write_string(b, ": ;\n")
@@ -193,12 +190,19 @@ emit_mir_inst :: proc(b: ^strings.Builder, m: ^MIR_Module, proc_id: int, op: ^MI
 		write_block_label(b, proc_id, op.target)
 		strings.write_string(b, ";\n")
 
-	case .Jump_If_False:
-		strings.write_string(b, "    if (!(")
+	case .Branch:
+		strings.write_string(b, "    if (")
 		write_value_ref(b, m, op.a)
-		strings.write_string(b, ")) goto ")
+		strings.write_string(b, ") goto ")
 		write_block_label(b, proc_id, op.target)
+		strings.write_string(b, "; else goto ")
+		write_block_label(b, proc_id, op.target_else)
 		strings.write_string(b, ";\n")
+
+	case .Jump_If_False:
+		// Raw fallthrough conditionals are bootstrap lowering artifacts. The
+		// semantic normalization + verifier boundary must eliminate them.
+		return false
 
 	case .Return:
 		strings.write_string(b, "    return")
