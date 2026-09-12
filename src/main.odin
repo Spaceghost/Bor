@@ -14,17 +14,16 @@ decl_is_exported :: proc(d: ^ast.Value_Decl) -> bool {
 	for attribute in d.attributes {
 		if attribute == nil do continue
 		for elem in attribute.elems {
-			if ident, ok := elem.derived.(^ast.Ident); ok && ident.name == "export" {
-				return true
-			}
+			ident, is_ident := elem.derived.(^ast.Ident)
+			if is_ident && ident.name == "export" do return true
 		}
 	}
 	return false
 }
 
 // The direct AST backend is intentionally retained as a small shootout control.
-// It still uses procedure linkage encoded alongside its old call-convention
-// handling, so only that lane receives this compatibility normalization.
+// It predates explicit linkage in Bor's semantic model, so only that lane gets
+// this compatibility normalization.
 normalize_direct_export_linkage :: proc(pkg: ^ast.Package) {
 	for _, file in pkg.files {
 		for stmt in file.decls {
@@ -37,23 +36,29 @@ normalize_direct_export_linkage :: proc(pkg: ^ast.Package) {
 	}
 }
 
-// MIR owns linkage as a separate semantic bit. Reset the bootstrap call-
-// convention guess and derive external visibility solely from @(export).
+mark_mir_export :: proc(m: ^MIR_Module, name: string) {
+	for &p in m.procedures {
+		if p.name == name {
+			p.external = true
+			return
+		}
+	}
+}
+
+// MIR owns linkage independently from calling convention.
 apply_mir_export_linkage :: proc(m: ^MIR_Module, pkg: ^ast.Package) {
 	for &p in m.procedures do p.external = false
 
 	for _, file in pkg.files {
 		for stmt in file.decls {
 			d, is_decl := stmt.derived.(^ast.Value_Decl)
-			if !is_decl || !decl_is_exported(d) || len(d.names) != 1 || len(d.values) != 1 do continue
-			if _, is_proc := d.values[0].derived.(^ast.Proc_Lit); !is_proc do continue
+			if !is_decl || !decl_is_exported(d) do continue
+			if len(d.names) != 1 || len(d.values) != 1 do continue
+			_, is_proc := d.values[0].derived.(^ast.Proc_Lit)
+			if !is_proc do continue
 			name, named := mir_ident_name(d.names[0])
 			if !named do continue
-			for &p in m.procedures {
-				if p.name == name {
-					p.external = true
-					break
-				}
+			mark_mir_export(m, name)
 		}
 	}
 }
@@ -65,7 +70,9 @@ main :: proc() {
 	}
 
 	command := os.args[1]
-	if command != "emit-c" && command != "emit-c-direct" && command != "emit-c-mir" && command != "dump-mir" {
+	valid_command := command == "emit-c" || command == "emit-c-direct" ||
+	                 command == "emit-c-mir" || command == "dump-mir"
+	if !valid_command {
 		usage()
 		os.exit(2)
 	}
@@ -79,13 +86,14 @@ main :: proc() {
 	generated: string
 	emitted := false
 
-	// The MIR lane won the first correctness/size/runtime shootout, so it is the
-	// product default. The direct lane remains available as an always-on control.
+	// MIR won the first correctness/size/runtime shootout and is the product
+	// default. The direct lane remains an always-on control.
 	if command == "emit-c" || command == "emit-c-mir" || command == "dump-mir" {
 		m, lowered := lower_package_to_mir(pkg)
 		defer mir_destroy(&m)
 		if !lowered do os.exit(1)
 		apply_mir_export_linkage(&m, pkg)
+
 		if command == "dump-mir" {
 			generated = mir_dump(&m)
 			emitted = true
