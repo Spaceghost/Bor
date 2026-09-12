@@ -105,6 +105,10 @@ emit_mir_proc_head :: proc(b: ^strings.Builder, m: ^MIR_Module, proc_id: int, pr
 emit_mir_inst :: proc(b: ^strings.Builder, m: ^MIR_Module, proc_id: int, op: ^MIR_Inst) -> bool {
 	#partial switch op.kind {
 	case .Label:
+		// A block that is reached only by linear fallthrough needs no C label.
+		// Avoiding decorative labels keeps -Wall -Werror clean and the unity
+		// output smaller. Every explicit jump increments `incoming` in lowering.
+		if m.blocks[int(op.target)].incoming == 0 do return true
 		write_block_label(b, proc_id, op.target)
 		strings.write_string(b, ": ;\n")
 
