@@ -33,7 +33,12 @@ mir_block_in_proc :: proc(p: ^MIR_Procedure, id: Block_ID) -> bool {
 }
 
 mir_require_value :: proc(m: ^MIR_Module, id: Value_ID, proc_index, op_index: int, role: string) -> bool {
-	if mir_value_id_valid(m, id) do return true
+	if mir_value_id_valid(m, id) {
+		v := &m.values[int(id)]
+		p := &m.procedures[proc_index]
+		if v.kind == .Global || (u64(id) >= u64(p.first_value) && u64(id) < u64(p.first_value)+u64(p.value_count)) do return true
+		return mir_verify_fail("proc %d op %d references a foreign procedure value %d", proc_index, op_index, u32(id))
+	}
 	return mir_verify_fail("proc %d op %d has invalid %s value id %d", proc_index, op_index, role, u32(id))
 }
 
@@ -182,5 +187,5 @@ mir_verify :: proc(m: ^MIR_Module) -> bool {
 		}
 	}
 
-	return true
+	return mir_verify_types(m)
 }

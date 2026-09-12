@@ -1,165 +1,89 @@
-# Bor
+# Borr
 
-**Bor is an Odin-to-C compiler written in Odin.**
+**An Odin-to-C compiler written in Odin.** Repository: `Bor`. Executable: `bor`.
 
-It uses Odin's own tooling parser as the syntax authority, then takes ownership of semantics in a compact typed MIR before emitting strict C99. The point is not to maintain a second Odin grammar forever. The point is to build a small, inspectable compiler pipeline whose behavior can be proved against Odin itself and competing implementations.
+Borr implements a checked scalar subset, not the complete Odin language. Its development loop is executable: compare native Odin, verified raw MIR, optimized MIR, and independent reference implementations before making performance claims.
 
-Bor is early. It is also already executable, differential-tested, deterministic, and faster than the pinned Codin reference on the current tiny-package shootout. Those are more useful properties than an enormous README claiming the language is finished.
+## Build and use
 
-## Pipeline
+The tested bootstrap compiler is Odin `dev-2026-09`; CI verifies its release archive checksum. GCC, Clang, Make, and Python 3 are used for the test and measurement tools. The compiler and test-program generator are written in Odin.
+
+```sh
+make bor
+./build/bor emit-c test/melodica -o build/melodica.c
+cc -std=c99 -pedantic-errors -Wall -Wextra -Werror -O3 \
+  build/melodica.c test/c99/smoke.c -o build/smoke
+./build/smoke
+
+make test unit audit
+make benchmark
+```
+
+`emit-c` now selects the **verified, optimized MIR path**. The controls remain available:
+
+```sh
+./build/bor emit-c-mir-raw test/semantics -o build/semantics-raw.c
+./build/bor emit-c-mir test/semantics -o build/semantics.c
+./build/bor dump-mir-raw test/semantics -o build/semantics-raw.mir
+./build/bor dump-mir test/semantics -o build/semantics.mir
+./build/bor emit-c-direct test/melodica -o build/direct.c
+```
+
+“Raw” means unoptimized, **not unchecked**. The direct AST-to-C emitter is an experimental comparison control: it passes the original fixtures but has known semantic gaps on the wider corpus. It is no longer the default.
+
+## Compiler pipeline
 
 ```text
 Odin source
-    |
-    v
-core:odin/parser + core:odin/ast
-    |  Odin owns syntax
-    v
-semantic normalization
-    |  export visibility != calling convention
-    |  parser spellings become semantic metadata
-    v
-flat typed MIR
-    |  Value_ID / Block_ID / Proc_ID
-    |  contiguous value, op, block and call-argument tables
-    v
-MIR verifier
-    |  ranges, operands, block termination, targets, calls, CFG counts
-    +------------------------------+
-    |                              |
-    v                              v
-human-readable `dump-mir`       strict C99 backend
-                                   |
-                         +---------+---------+
-                         |                   |
-                         v                   v
-                       GCC                 Clang
+  -> core:odin/parser + core:odin/ast
+  -> scoped scalar lowering and constant checks
+  -> semantic normalization and explicit two-successor CFG
+  -> structural and type verification
+  -> adjacent single-use copy fusion
+  -> verification again
+  -> one readable C99 translation unit
+  -> GCC / Clang
 ```
 
-There is also a deliberately retained direct AST-to-C backend. It is useful as an independent implementation for differential testing while MIR becomes the canonical compiler path.
+Borr uses Odin's shipped tooling parser rather than maintaining another grammar. Borr owns semantics after parsing; using that parser does not provide Odin's full semantic checker.
 
-The design rule is simple: **front-end syntax may be complicated; the middle of the compiler should not be mysterious.**
+The MIR uses distinct value, block, and procedure IDs into flat tables. Procedures own contiguous table ranges. Conditional branches name both successors. Optimization retains instruction coordinates by replacing eliminated copies with explicit `nop` records. `dump-mir` exposes the representation actually consumed by the backend.
 
-## Try it
+Export linkage is independent of calling convention. Unsupported ABI attributes and context-bearing procedures are diagnosed rather than silently treated as C functions.
+
+## What this slice exercises
+
+The fixtures cover `u8`, `u32`, `uintptr`, `bool`, byte multi-pointers, scalar casts, direct calls, `@(export)`, C/contextless procedures, scoped locals, zero initialization, assignments, unsigned arithmetic, bit operations, conditionals, short-circuit expressions, bounded ranges, and returns.
+
+The semantic audit specifically checks nested argument lists, left-to-right call effects, shadow restoration, all-branches-return control flow, byte-width intermediate arithmetic, oversized shifts, source integer spellings, dynamically reevaluated range bounds, and inclusive ranges ending at the maximum integer value.
+
+Typed constant overflow is diagnosed. Runtime unsigned arithmetic retains its width and wrapping behavior. These are separate rules; optimization must not turn one into the other.
+
+This is **not** a full type checker or an implementation of signed arithmetic, aggregates, strings/slices, imports, generic procedures, the implicit Odin context, or the broader runtime. Unsupported and invalid inputs are distinct categories in the audit. Dominance and definite-assignment proofs are not yet part of the MIR verifier.
+
+## Shootout and evidence
+
+`make test` keeps the original 15 native/direct/MIR executable controls. `make unit` exercises MIR verification and the copy-fusion guards. `make audit` adds:
+
+- A deterministic **Odin-written generator**: 128 procedures, 256 input pairs per seed, two runtime input seeds.
+- Exact native-Odin output comparison against raw and optimized MIR under GCC and Clang at `-O0` and `-O3`, plus optimized AddressSanitizer/UndefinedBehaviorSanitizer builds.
+- **655,360 generated result comparisons** across those ten variants. This is a bounded corpus, not 655,360 independent language features or proof of complete correctness.
+- Rejection cases checked against native Odin, including immutable parameters, argument/return types, scope escape, duplicate declarations, malformed syntax, and constant overflow. Failure must preserve an existing output file.
+
+Every process has a timeout. Oracle success and the exact expected output length are required before a comparison can pass. Failed or empty executions cannot qualify as agreement.
+
+The `Semantic audit and measured shootout` workflow retains the executable, its checksum, exact revision, generated Odin/C, raw/optimized MIR, diagnostics, native outputs, commands, and machine-readable reports in `bor-semantic-evidence-<run-id>`.
+
+`make benchmark` records interleaved raw timing samples, warmups, compiler versions, source hashes, generated C sizes, executable sections, compile/link time, and runtime checksums. Timing is informational, not a noisy CI speed threshold.
 
 ```sh
-make test
-
-# Build Bor
-odin build src -out:build/bor -o:speed
-
-# Canonical MIR path
-./build/bor emit-c-mir test/control -o build/control.c
-
-# Independent direct backend
-./build/bor emit-c-direct test/control -o build/control-direct.c
-
-# Inspect exactly the verified MIR consumed by the backend
-./build/bor dump-mir test/control -o build/control.mir
+make benchmark BENCH_ARGS="--codin /path/to/codin --thor /path/to/thor"
 ```
 
-`emit-c` currently aliases the direct backend while the MIR path is brought through the feature ladder. Both are kept under the same behavior tests.
+Codin is an independent executable reference where its implemented surface overlaps. Thor is a parser and data-oriented architecture reference; its AST output is **not** counted as a runtime result. Native Odin remains the behavior oracle. The pinned revisions are in CI and [the audit notes](docs/semantic-audit.md).
 
-## What is proved today
+## Next milestones
 
-The current executable subset covers the language used by the repository's melodica, linkage, and control-flow workloads:
+The next language ladder is a real address/lvalue model, structs and fixed arrays, enums, slices/strings, multiple returns and `defer`, unions, imports/runtime integration, and generics. Each addition needs positive, negative, and differential fixtures before becoming supported.
 
-- `u8`, `u32`, `uintptr`, `bool`
-- `[^]u8` and byte indexing
-- `proc "c"` and `proc "contextless"`
-- `@(export)` as linkage metadata independent of ABI
-- scalar casts
-- direct procedure calls
-- locals and exercised local type inference
-- unary and binary expressions
-- Odin XOR spelling (`~`, `~=`) lowered correctly to C/MIR semantics
-- assignments and compound assignments
-- `if` / `else`
-- short-circuit `&&` / `||`
-- bounded `for i in a..<b` and `..=` ranges
-- returns
-
-Unsupported AST shapes fail loudly instead of being translated by optimism.
-
-## The shootout
-
-Bor is developed in loops against three oracles:
-
-1. **Native Odin** is the semantic authority for observable behavior.
-2. **Codin** (`Spaceghost/codin`, pinned in CI) is the executable Odin-to-C reference.
-3. **Thor** (`Spaceghost/Thor`, pinned in CI) is a useful modern front-end/data-oriented design reference.
-
-Every supported slice is expected to survive:
-
-- deterministic Bor emission, byte-for-byte across repeated runs;
-- strict `-std=c99 -pedantic-errors -Wall -Wextra -Werror` compilation;
-- GCC and Clang;
-- native-Odin differential behavior;
-- adversarial semantic fixtures, not only happy paths;
-- Codin/Thor comparison where their implemented surface overlaps;
-- generated-source, binary-size, and CLI-latency reporting.
-
-The linkage fixture is intentionally hostile: it gives an internal Odin `proc "c"` the same C symbol name as a function supplied by the host harness. If Bor confuses calling convention with `@(export)`, it fails at link time or runtime.
-
-### Current pinned tiny-package result
-
-GitHub Actions run 61, `dev-2026-09` Odin, 30 warm CLI samples after one discarded cold invocation:
-
-| compiler path | p50 emit latency | p95 |
-|---|---:|---:|
-| Bor direct | **1.175 ms** | 1.245 ms |
-| Bor MIR + verify | **1.311 ms** | 1.397 ms |
-| Codin | 8.762 ms | 13.289 ms |
-
-This is a deliberately tiny workload, not a universal compiler benchmark. On this workload Bor MIR is about **6.7x faster** than the pinned Codin executable while also running the verifier.
-
-The same run produced these GCC text sizes:
-
-| workload | Bor direct | Bor MIR | Codin |
-|---|---:|---:|---:|
-| melodica smoke | 2712 B | **2664 B** | 2712 B |
-| control smoke | 1483 B | **1472 B** | n/a in the linked size report |
-
-Clang produced identical text sizes for Bor direct vs MIR on both measured workloads. Generated MIR C is currently much more verbose than direct C; optimized machine code is the metric that matters for this stage, and readability/compaction remains an obvious backend improvement.
-
-## MIR
-
-Bor's MIR is intentionally flat and boring in the complimentary compiler-engineering sense.
-
-- values, blocks, procedures, instructions, and call arguments use indexed tables;
-- IDs are distinct types rather than interchangeable integers at interfaces;
-- procedures own contiguous ranges into module tables;
-- instructions have fixed-shape records instead of object graphs;
-- calling convention and export visibility are separate facts;
-- semantic normalization happens before verification;
-- the C backend only receives verified MIR;
-- `dump-mir` exposes that exact representation deterministically.
-
-The verifier currently checks table ranges, value and procedure IDs, parameter ownership, basic-block initialization and termination, label identity, instruction operands, call ranges, branch targets, and stored incoming-edge counts.
-
-A compiler IR that cannot explain itself is merely a future debugging incident with branding.
-
-## Why Codin and Thor are references, not foundations
-
-Bor borrows evidence and ideas, not implementation debt.
-
-Codin is valuable because it already exercised a useful Odin-to-C surface and gives the shootout an independent implementation. Thor is valuable because its modern parser work and data-oriented direction are closer to where a clean compiler should go. Odin's own `core:odin/parser` remains the source of truth for syntax, so Bor can spend its complexity budget on semantic lowering, IR, diagnostics, optimization, and portable C.
-
-## Next compiler loops
-
-The immediate architectural target is to remove physical block order from control-flow meaning. Conditional MIR branches should name **both successors explicitly** so blocks can be reordered by later passes without silently changing semantics.
-
-After that, feature work proceeds through the same evidence loop rather than as a giant syntax land-grab:
-
-1. explicit CFG edges + verifier strengthening;
-2. a real lvalue/address model;
-3. structs, fixed arrays, enums, and richer pointer operations;
-4. slices and strings;
-5. tuples / multiple returns and `defer`;
-6. unions and broader aggregate ABI lowering;
-7. imports/packages and runtime surface;
-8. generics and the remaining Odin type-system surface;
-9. optimization passes, each verified before and after transformation;
-10. differential fuzzing over the supported subset.
-
-The long-term standard is not merely "Odin that happens to compile to C." Bor should emit portable, small, readable C; cross-compile without ceremony; make wrong IR difficult to represent and easy to diagnose; and stay simple enough that a compiler engineer can inspect a lowering decision without excavating a framework.
+The Graal/Sulong inspiration is an inspectable semantic representation shared by execution, optimization, and tooling. Borr currently emits C ahead of time. It does not contain a JIT, Truffle integration, speculative optimization, or a self-hosting compiler.

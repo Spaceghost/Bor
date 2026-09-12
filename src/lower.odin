@@ -13,6 +13,8 @@ Lowerer :: struct {
 	current_proc:  Proc_ID,
 	current_block: Block_ID,
 	failed:        bool,
+	bindings:      [dynamic]Local_Binding,
+	scope_marks:   [dynamic]int,
 }
 
 lower_fail :: proc(l: ^Lowerer, node: ^ast.Node, msg: string, args: ..any) -> bool {
@@ -72,7 +74,15 @@ mir_proc_external :: proc(p: ^ast.Proc_Lit) -> bool {
 
 new_value :: proc(l: ^Lowerer, kind: Value_Kind, t: MIR_Type, name := "", literal := "") -> Value_ID {
 	id := Value_ID(len(l.m.values))
-	append(&l.m.values, MIR_Value{kind = kind, type = t, name = name, literal = literal})
+	v := MIR_Value{kind = kind, type = t, name = name, literal = literal}
+	if kind == .Literal {
+		v.constant_value, v.is_constant = mir_literal_number(literal)
+		if t == .Bool {
+			v.is_constant = true
+			v.constant_value = literal == "true" ? 1 : 0
+		}
+	}
+	append(&l.m.values, v)
 	return id
 }
 
@@ -103,6 +113,7 @@ new_block :: proc(l: ^Lowerer) -> Block_ID {
 
 emit_op :: proc(l: ^Lowerer, inst: MIR_Inst) {
 	assert(l.current_block != INVALID_BLOCK)
+	if !record_constant(l, inst) do l.failed = true
 	append(&l.m.ops, inst)
 	l.m.blocks[int(l.current_block)].op_count += 1
 }
@@ -247,14 +258,22 @@ lower_expr :: proc(l: ^Lowerer, expr: ^ast.Expr) -> (Value_ID, bool) {
 
 	#partial switch n in expr.derived {
 	case ^ast.Ident:
+		if n.name == "true" || n.name == "false" do return new_literal(l, n.name, .Bool), true
 		if n.name == "nil" do return new_value(l, .Null, .U8_Ptr, literal = "NULL"), true
 		if id, found := lookup_value(l, n.name); found do return id, true
 		lower_fail(l, &expr.expr_base, "unknown identifier %s", n.name)
 		return INVALID_VALUE, false
 
 	case ^ast.Basic_Lit:
+		if n.tok.kind != .Integer && n.tok.kind != .Rune {
+			lower_fail(l, &expr.expr_base, "only integer and rune literals are supported")
+			return INVALID_VALUE, false
+		}
 		t := MIR_Type.UIntptr
-		if n.tok.kind == tokenizer.Token_Kind.Rune do t = .U8
+		if _, ok := mir_literal_number(n.tok.text); !ok {
+			lower_fail(l, &expr.expr_base, "literal does not fit the supported unsigned 64-bit domain")
+			return INVALID_VALUE, false
+		}
 		return new_literal(l, n.tok.text, t), true
 
 	case ^ast.Paren_Expr:
@@ -295,11 +314,18 @@ lower_expr :: proc(l: ^Lowerer, expr: ^ast.Expr) -> (Value_ID, bool) {
 			lower_fail(l, &expr.expr_base, "unknown procedure %s", name)
 			return INVALID_VALUE, false
 		}
+		// Reserve the whole outer span before recursively lowering arguments.
+		// Inner calls append their own spans and may reallocate the table.
 		first_arg := u32(len(l.m.call_args))
-		for arg in n.args {
+		for _ in n.args do append(&l.m.call_args, INVALID_VALUE)
+		for arg, i in n.args {
 			id, arg_ok := lower_expr(l, arg)
 			if !arg_ok do return INVALID_VALUE, false
-			append(&l.m.call_args, id)
+			if id == INVALID_VALUE {
+				lower_fail(l, &expr.expr_base, "void expression used as a call argument")
+				return INVALID_VALUE, false
+			}
+			l.m.call_args[int(first_arg) + i] = id
 		}
 		result_type := l.m.procedures[int(callee)].result
 		dst := INVALID_VALUE
@@ -337,7 +363,10 @@ lower_expr :: proc(l: ^Lowerer, expr: ^ast.Expr) -> (Value_ID, bool) {
 		if !left_ok do return INVALID_VALUE, false
 		b, right_ok := lower_expr(l, n.right)
 		if !right_ok do return INVALID_VALUE, false
-		t := binary_result_type(op, value_type(l, a), value_type(l, b))
+		left_type := value_type(l, a)
+		right_type := value_type(l, b)
+		if l.m.values[int(a)].kind == .Literal && l.m.values[int(b)].kind != .Literal do left_type = right_type
+		t := binary_result_type(op, left_type, right_type)
 		dst := new_temp(l, t)
 		emit_op(l, MIR_Inst{kind = .Binary, type = t, dst = dst, a = a, b = b, bin_op = op})
 		return dst, true
@@ -360,16 +389,26 @@ lower_expr :: proc(l: ^Lowerer, expr: ^ast.Expr) -> (Value_ID, bool) {
 }
 
 lower_local :: proc(l: ^Lowerer, n: ^ast.Value_Decl) -> bool {
-	if len(n.names) != 1 || len(n.values) != 1 do return lower_fail(l, &n.node, "multi-name local declaration")
+	if len(n.names) != 1 || len(n.values) > 1 do return lower_fail(l, &n.node, "multi-name local declaration")
+	if !n.is_mutable do return lower_fail(l, &n.node, "local compile-time constants are not implemented")
 	name, named := mir_ident_name(n.names[0])
 	if !named do return lower_fail(l, &n.node, "local name")
-	init, init_ok := lower_expr(l, n.values[0])
-	if !init_ok do return false
 	t := mir_type_from_ast(n.type)
-	if t == .Invalid do t = value_type(l, init)
+	if n.type != nil && t == .Invalid do return lower_fail(l, &n.node, "unsupported local type")
+	init := INVALID_VALUE
+	if len(n.values) == 1 {
+		init_ok: bool
+		init, init_ok = lower_expr(l, n.values[0])
+		if !init_ok do return false
+		if t == .Invalid do t = value_type(l, init)
+	} else {
+		if t == .Invalid do return lower_fail(l, &n.node, "zero-initialized local needs a supported type")
+		init = new_literal(l, t == .Bool ? "false" : "0", t)
+		if t == .U8_Ptr do init = new_value(l, .Null, t)
+	}
 	if t == .Invalid do return lower_fail(l, &n.node, "cannot infer local %s", name)
 	dst := new_value(l, .Local, t, name = name)
-	l.locals[name] = dst
+	if !bind_local(l, name, dst, &n.node) do return false
 	emit_op(l, MIR_Inst{kind = .Assign, type = t, dst = dst, a = init})
 	return true
 }
@@ -382,6 +421,7 @@ lower_assign :: proc(l: ^Lowerer, n: ^ast.Assign_Stmt) -> bool {
 	if name, named := mir_ident_name(n.lhs[0]); named {
 		dst, found := lookup_value(l, name)
 		if !found do return lower_fail(l, &n.node, "assignment to unknown %s", name)
+		if l.m.values[int(dst)].kind == .Global do return lower_fail(l, &n.node, "assignment to constant %s", name)
 		if n.op.text == "=" {
 			emit_op(l, MIR_Inst{kind = .Assign, type = value_type(l, dst), dst = dst, a = rhs})
 			return true
@@ -412,28 +452,33 @@ lower_if :: proc(l: ^Lowerer, n: ^ast.If_Stmt) -> bool {
 	if n.init != nil do return lower_fail(l, &n.node, "if initializer")
 	cond, cond_ok := lower_expr(l, n.cond)
 	if !cond_ok do return false
-
 	then_block := new_block(l)
-	end_block := new_block(l)
-	else_block := end_block
-	if n.else_stmt != nil do else_block = new_block(l)
+	else_block := new_block(l)
+	end_block := INVALID_BLOCK
 	jump_if_false(l, cond, else_block)
 
 	begin_block(l, then_block)
 	if !lower_stmt(l, n.body) do return false
-	if !block_terminated(l) do jump(l, end_block)
-
-	if n.else_stmt != nil {
-		begin_block(l, else_block)
-		if !lower_stmt(l, n.else_stmt) do return false
-		if !block_terminated(l) do jump(l, end_block)
+	if !block_terminated(l) {
+		end_block = new_block(l)
+		jump(l, end_block)
 	}
 
-	begin_block(l, end_block)
+	begin_block(l, else_block)
+	if n.else_stmt != nil && !lower_stmt(l, n.else_stmt) do return false
+	if !block_terminated(l) {
+		if end_block == INVALID_BLOCK do end_block = new_block(l)
+		jump(l, end_block)
+	}
+	// No phantom join when both arms return. The current block stays terminated.
+	if end_block != INVALID_BLOCK do begin_block(l, end_block)
 	return true
 }
 
 lower_range :: proc(l: ^Lowerer, n: ^ast.Range_Stmt) -> bool {
+	enter_scope(l)
+	defer leave_scope(l)
+	if n.init != nil do return lower_fail(l, &n.node, "range initializers are not implemented")
 	if n.reverse || len(n.vals) != 1 do return lower_fail(l, &n.node, "reverse/multi-value range")
 	name, named := mir_ident_name(n.vals[0])
 	if !named do return lower_fail(l, &n.node, "range index")
@@ -442,12 +487,10 @@ lower_range :: proc(l: ^Lowerer, n: ^ast.Range_Stmt) -> bool {
 
 	first, first_ok := lower_expr(l, r.left)
 	if !first_ok do return false
-	limit, limit_ok := lower_expr(l, r.right)
-	if !limit_ok do return false
-	idx_type := value_type(l, limit)
-	if idx_type == .Invalid do idx_type = .UIntptr
+	idx_type := range_index_type(l, r.right)
+	if !mir_unsigned(idx_type) do return lower_fail(l, &n.node, "unsupported range index type")
 	index := new_value(l, .Local, idx_type, name = name)
-	l.locals[name] = index
+	if !bind_local(l, name, index, &n.node) do return false
 	emit_op(l, MIR_Inst{kind = .Assign, type = idx_type, dst = index, a = first})
 
 	cond_block := new_block(l)
@@ -456,6 +499,8 @@ lower_range :: proc(l: ^Lowerer, n: ^ast.Range_Stmt) -> bool {
 	jump(l, cond_block)
 
 	begin_block(l, cond_block)
+	limit, limit_ok := lower_expr(l, r.right)
+	if !limit_ok do return false
 	cmp := Binary_Op.Less
 	if r.op.text == "..=" do cmp = .Less_Equal
 	cond := new_temp(l, .Bool)
@@ -465,6 +510,15 @@ lower_range :: proc(l: ^Lowerer, n: ^ast.Range_Stmt) -> bool {
 	begin_block(l, body_block)
 	if !lower_stmt(l, n.body) do return false
 	if !block_terminated(l) {
+		if r.op.text == "..=" {
+			// An inclusive maximum must exit before increment wraps the index.
+			step_block := new_block(l)
+			maximum := new_literal(l, unsigned_max_text(idx_type), idx_type)
+			can_step := new_temp(l, .Bool)
+			emit_op(l, MIR_Inst{kind = .Binary, type = .Bool, dst = can_step, a = index, b = maximum, bin_op = .Not_Equal})
+			jump_if_false(l, can_step, end_block)
+			begin_block(l, step_block)
+		}
 		one := new_literal(l, "1", idx_type)
 		next := new_temp(l, idx_type)
 		emit_op(l, MIR_Inst{kind = .Binary, type = idx_type, dst = next, a = index, b = one, bin_op = .Add})
@@ -482,6 +536,8 @@ lower_stmt :: proc(l: ^Lowerer, stmt: ^ast.Stmt) -> bool {
 
 	#partial switch n in stmt.derived {
 	case ^ast.Block_Stmt:
+		enter_scope(l)
+		defer leave_scope(l)
 		for child in n.stmts {
 			if block_terminated(l) do break
 			if !lower_stmt(l, child) do return false
@@ -518,9 +574,9 @@ const_init_text :: proc(expr: ^ast.Expr) -> (string, MIR_Type, bool) {
 	if expr == nil do return "", .Invalid, false
 	#partial switch n in expr.derived {
 	case ^ast.Basic_Lit:
-		t := MIR_Type.UIntptr
-		if n.tok.kind == tokenizer.Token_Kind.Rune do t = .U8
-		return n.tok.text, t, true
+		if n.tok.kind != .Integer && n.tok.kind != .Rune do return "", .Invalid, false
+		_, valid := mir_literal_number(n.tok.text)
+		return n.tok.text, .UIntptr, valid
 	case ^ast.Paren_Expr:
 		return const_init_text(n.expr)
 	case ^ast.Call_Expr:
@@ -528,7 +584,8 @@ const_init_text :: proc(expr: ^ast.Expr) -> (string, MIR_Type, bool) {
 			t := mir_type_from_ast(n.expr)
 			if t != .Invalid {
 				text, _, init_ok := const_init_text(n.args[0])
-				return text, t, init_ok
+				number, number_ok := mir_literal_number(text)
+				return text, t, init_ok && number_ok && mir_unsigned(t) && number <= unsigned_limit(t)
 			}
 		}
 	}
@@ -544,13 +601,18 @@ sorted_files :: proc(pkg: ^ast.Package) -> [dynamic]string {
 
 collect_symbols :: proc(l: ^Lowerer, pkg: ^ast.Package) -> bool {
 	for path in sorted_files(pkg) {
+		if len(pkg.files[path].imports) != 0 do return lower_fail(l, nil, "imports are not implemented")
 		for stmt in pkg.files[path].decls {
 			d, is_decl := stmt.derived.(^ast.Value_Decl)
-			if !is_decl || len(d.names) != 1 || len(d.values) != 1 do continue
+			if !is_decl || len(d.names) != 1 || len(d.values) != 1 do return lower_fail(l, &stmt.stmt_base, "unsupported top-level declaration")
+			if d.is_mutable do return lower_fail(l, &stmt.stmt_base, "mutable globals are not implemented")
 			name, named := mir_ident_name(d.names[0])
 			if !named do return lower_fail(l, nil, "top-level declaration name")
+			if _, found := l.proc_ids[name]; found do return lower_fail(l, nil, "duplicate declaration %s", name)
+			if _, found := l.global_ids[name]; found do return lower_fail(l, nil, "duplicate declaration %s", name)
 
 			if p, is_proc := d.values[0].derived.(^ast.Proc_Lit); is_proc {
+				if !validate_proc_contract(l, d, p) do return false
 				result := mir_proc_result(p)
 				if result == .Invalid do return lower_fail(l, &p.node, "procedure result type for %s", name)
 				id := Proc_ID(len(l.m.procedures))
@@ -564,7 +626,11 @@ collect_symbols :: proc(l: ^Lowerer, pkg: ^ast.Package) -> bool {
 			t := mir_type_from_ast(d.type)
 			if t == .Invalid do t = init_type
 			if t == .Invalid do return lower_fail(l, nil, "top-level constant type for %s", name)
+			number, number_ok := mir_literal_number(init)
+			if !number_ok || !mir_unsigned(t) || number > unsigned_limit(t) do return lower_fail(l, nil, "top-level constant %s is out of range", name)
 			value_id := new_value(l, .Global, t, name = name)
+			l.m.values[int(value_id)].is_constant = true
+			l.m.values[int(value_id)].constant_value = number
 			append(&l.m.globals, MIR_Global{name = name, type = t, init = init, value_id = value_id})
 			l.global_ids[name] = value_id
 		}
@@ -578,18 +644,23 @@ lower_procedure :: proc(l: ^Lowerer, id: Proc_ID, p: ^ast.Proc_Lit) -> bool {
 	l.current_block = INVALID_BLOCK
 	delete(l.locals)
 	l.locals = make(map[string]Value_ID)
+	clear(&l.bindings)
+	clear(&l.scope_marks)
+	enter_scope(l)
+	defer leave_scope(l)
 
 	meta.first_value = u32(len(l.m.values))
 	meta.param_first = meta.first_value
 	if p.type.params != nil {
 		for f in p.type.params.list {
+			if len(f.names) == 0 do return lower_fail(l, &p.node, "unnamed parameters are not implemented")
 			t := mir_type_from_ast(f.type)
 			if t == .Invalid do return lower_fail(l, &p.node, "procedure parameter type in %s", meta.name)
 			for name_expr in f.names {
 				name, named := mir_ident_name(name_expr)
 				if !named do return lower_fail(l, &p.node, "procedure parameter name in %s", meta.name)
 				value_id := new_value(l, .Param, t, name = name)
-				l.locals[name] = value_id
+				if !bind_local(l, name, value_id, &p.node) do return false
 				meta.param_count += 1
 			}
 		}
@@ -625,6 +696,8 @@ lower_package_to_mir :: proc(pkg: ^ast.Package) -> (m: MIR_Module, ok: bool) {
 	defer delete(l.proc_ids)
 	defer delete(l.global_ids)
 	defer delete(l.locals)
+	defer delete(l.bindings)
+	defer delete(l.scope_marks)
 
 	if !collect_symbols(&l, pkg) do return m, false
 

@@ -118,3 +118,13 @@ test: $(BUILD)/smoke-direct-gcc $(BUILD)/smoke-direct-clang $(BUILD)/smoke-mir-g
 
 clean:
 	rm -rf $(BUILD)
+
+.PHONY: unit audit benchmark
+unit: | $(BUILD)
+	$(ODIN) test src -out:$(BUILD)/unit -define:ODIN_TEST_THREADS=1
+
+audit: bor
+	ODIN="$(ODIN)" CC="$(CC)" CLANG="$(CLANG)" python3 tools/audit.py
+
+benchmark: bor
+	ODIN="$(ODIN)" CC="$(CC)" CLANG="$(CLANG)" python3 tools/benchmark.py $(BENCH_ARGS)

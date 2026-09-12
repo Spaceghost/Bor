@@ -5,7 +5,7 @@ import "core:odin/parser"
 import "core:os"
 
 usage :: proc() {
-	fmt.eprintln("usage: bor <emit-c|emit-c-direct|emit-c-mir|dump-mir> <odin-package-directory> -o <output>")
+	fmt.eprintln("usage: bor <emit-c|emit-c-direct|emit-c-mir|emit-c-mir-raw|dump-mir|dump-mir-raw> <odin-package-directory> -o <output>")
 }
 
 main :: proc() {
@@ -15,7 +15,7 @@ main :: proc() {
 	}
 
 	command := os.args[1]
-	if command != "emit-c" && command != "emit-c-direct" && command != "emit-c-mir" && command != "dump-mir" {
+	if command != "emit-c" && command != "emit-c-direct" && command != "emit-c-mir" && command != "dump-mir" && command != "emit-c-mir-raw" && command != "dump-mir-raw" {
 		usage()
 		os.exit(2)
 	}
@@ -26,16 +26,27 @@ main :: proc() {
 		os.exit(1)
 	}
 
+	for _, file in pkg.files {
+		if file.syntax_error_count != 0 {
+			fmt.eprintfln("bor: refusing to lower a package with syntax errors")
+			os.exit(1)
+		}
+	}
+
 	generated: string
 	emitted := false
 
-	if command == "emit-c-mir" || command == "dump-mir" {
+	if command != "emit-c-direct" {
 		m, lowered := lower_package_to_mir(pkg)
 		defer mir_destroy(&m)
 		if !lowered do os.exit(1)
 		if !normalize_mir_semantics(pkg, &m) do os.exit(1)
 		if !mir_verify(&m) do os.exit(1)
-		if command == "dump-mir" {
+		if command != "emit-c-mir-raw" && command != "dump-mir-raw" {
+			_ = mir_optimize(&m)
+			if !mir_verify(&m) do os.exit(1)
+		}
+		if command == "dump-mir" || command == "dump-mir-raw" {
 			generated = mir_dump(&m)
 			emitted = true
 		} else {

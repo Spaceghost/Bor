@@ -37,6 +37,8 @@ MIR_Value :: struct {
 	type:    MIR_Type,
 	name:    string,
 	literal: string,
+	is_constant: bool,
+	constant_value: u64,
 }
 
 Binary_Op :: enum u8 {
@@ -72,6 +74,7 @@ Unary_Op :: enum u8 {
 
 Op_Kind :: enum u8 {
 	Invalid,
+	Nop,
 	Label,
 	Assign,
 	Unary,

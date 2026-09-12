@@ -32,14 +32,15 @@ normalize_calling_convention :: proc(cc: string) -> string {
 }
 
 find_layout_successor :: proc(m: ^MIR_Module, p: ^MIR_Procedure, b: ^Basic_Block) -> (Block_ID, bool) {
-	wanted_first_op := b.first_op + b.op_count
-	for bi in int(p.first_block)..<int(p.first_block + p.block_count) {
-		candidate := &m.blocks[bi]
-		if candidate.started && candidate.first_op == wanted_first_op {
-			return candidate.id, true
-		}
-	}
-	return INVALID_BLOCK, false
+	// Every physical block starts with a label. Use the op table as the index
+	// instead of scanning all blocks for every conditional (quadratic before).
+	next := u64(b.first_op) + u64(b.op_count)
+	if next >= u64(len(m.ops)) || next < u64(p.first_op) || next >= u64(p.first_op)+u64(p.op_count) do return INVALID_BLOCK, false
+	label := &m.ops[int(next)]
+	if label.kind != .Label || !mir_block_id_valid(m, label.target) || !mir_block_in_proc(p, label.target) do return INVALID_BLOCK, false
+	candidate := &m.blocks[int(label.target)]
+	if !candidate.started || u64(candidate.first_op) != next do return INVALID_BLOCK, false
+	return label.target, true
 }
 
 canonicalize_control_flow :: proc(m: ^MIR_Module) -> bool {
@@ -79,6 +80,9 @@ normalize_mir_semantics :: proc(pkg: ^ast.Package, m: ^MIR_Module) -> bool {
 		p.calling_convention = normalize_calling_convention(p.calling_convention)
 	}
 
+	by_name := make(map[string]int, len(m.procedures), context.temp_allocator)
+	for p, i in m.procedures do by_name[p.name] = i
+
 	// Visibility belongs to the declaration's @(export) attribute, not to its
 	// calling convention. Set it explicitly even if bootstrap lowering guessed.
 	for _, file in pkg.files {
@@ -89,11 +93,8 @@ normalize_mir_semantics :: proc(pkg: ^ast.Package, m: ^MIR_Module) -> bool {
 			if !named do continue
 			if _, is_proc := d.values[0].derived.(^ast.Proc_Lit); !is_proc do continue
 
-			for &p in m.procedures {
-				if p.name == name_expr.name {
-					p.external = decl_is_exported(d)
-					break
-				}
+			if i, found := by_name[name_expr.name]; found {
+				m.procedures[i].external = decl_is_exported(d)
 			}
 		}
 	}

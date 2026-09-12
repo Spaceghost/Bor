@@ -93,6 +93,8 @@ mir_dump_value_ref :: proc(b: ^strings.Builder, m: ^MIR_Module, id: Value_ID) {
 
 mir_dump_inst :: proc(b: ^strings.Builder, m: ^MIR_Module, op: ^MIR_Inst) {
 	#partial switch op.kind {
+	case .Nop:
+		strings.write_string(b, "nop")
 	case .Label:
 		strings.write_string(b, "label b")
 		mir_dump_int(b, int(op.target))
