@@ -22,10 +22,9 @@ decl_is_exported :: proc(d: ^ast.Value_Decl) -> bool {
 	return false
 }
 
-// Bootstrap compatibility bridge: both current backends still encode linkage
-// beside calling-convention data. Only @(export) declarations are rewritten.
-// The MIR will own linkage as an independent property once the shootout settles.
-normalize_export_linkage :: proc(pkg: ^ast.Package) {
+// Temporary MIR-only compatibility bridge. The direct backend owns linkage
+// directly now; the MIR path will follow in the next shootout step.
+normalize_mir_export_linkage :: proc(pkg: ^ast.Package) {
 	for _, file in pkg.files {
 		for stmt in file.decls {
 			d, is_decl := stmt.derived.(^ast.Value_Decl)
@@ -54,12 +53,12 @@ main :: proc() {
 		fmt.eprintfln("bor: failed to parse %s with core:odin/parser", os.args[2])
 		os.exit(1)
 	}
-	normalize_export_linkage(pkg)
 
 	generated: string
 	emitted := false
 
 	if command == "emit-c-mir" {
+		normalize_mir_export_linkage(pkg)
 		m, lowered := lower_package_to_mir(pkg)
 		defer mir_destroy(&m)
 		if !lowered do os.exit(1)
