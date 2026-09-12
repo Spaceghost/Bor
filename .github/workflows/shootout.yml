@@ -34,6 +34,21 @@ jobs:
       - name: Build Bor and prove both strict C99 backends
         run: make test
 
+      - name: Prove deterministic C emission
+        shell: bash
+        run: |
+          set -euo pipefail
+          for mode in emit-c-direct emit-c-mir; do
+            for fixture in melodica linkage control; do
+              a="$RUNNER_TEMP/${mode}-${fixture}-a.c"
+              b="$RUNNER_TEMP/${mode}-${fixture}-b.c"
+              build/bor "$mode" "test/$fixture" -o "$a"
+              build/bor "$mode" "test/$fixture" -o "$b"
+              cmp "$a" "$b"
+            done
+          done
+          echo 'Bor: deterministic emission proved for both backends and all workloads'
+
       - name: Build Codin oracle
         shell: bash
         run: |
@@ -55,13 +70,65 @@ jobs:
           "$RUNNER_TEMP/thor/thor" test/melodica/main.odin > "$RUNNER_TEMP/thor.ast"
           test -s "$RUNNER_TEMP/thor.ast"
 
+      - name: Informational competitor control workload
+        shell: bash
+        run: |
+          set -u
+          if "$RUNNER_TEMP/codin/codin" emit-c "$GITHUB_WORKSPACE/test/control" -o "$RUNNER_TEMP/codin-control.c" \
+             && gcc -std=c99 -pedantic-errors -Wall -Wextra -Werror -O3 "$RUNNER_TEMP/codin-control.c" test/c99/control_smoke.c -o "$RUNNER_TEMP/codin-control" \
+             && "$RUNNER_TEMP/codin-control"; then
+            echo 'Codin control workload: PASS'
+          else
+            echo 'Codin control workload: FAIL (informational competitor result)'
+          fi
+
+          if "$RUNNER_TEMP/thor/thor" test/control/main.odin > "$RUNNER_TEMP/thor-control.ast" \
+             && test -s "$RUNNER_TEMP/thor-control.ast"; then
+            echo 'Thor control parse: PASS'
+          else
+            echo 'Thor control parse: FAIL (informational competitor result)'
+          fi
+
+      - name: CLI emission latency report
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import statistics
+          import subprocess
+          import tempfile
+          import time
+          from pathlib import Path
+
+          root = Path.cwd()
+          tmp = Path(tempfile.mkdtemp(prefix="bor-shootout-"))
+          cases = [
+              ("bor-direct", [str(root / "build/bor"), "emit-c-direct", str(root / "test/melodica"), "-o", str(tmp / "bor-direct.c")]),
+              ("bor-mir", [str(root / "build/bor"), "emit-c-mir", str(root / "test/melodica"), "-o", str(tmp / "bor-mir.c")]),
+              ("codin", [str(Path("$RUNNER_TEMP") / "codin/codin"), "emit-c", str(root / "test/melodica"), "-o", str(tmp / "codin.c")]),
+          ]
+
+          for label, command in cases:
+              samples = []
+              for _ in range(31):
+                  start = time.perf_counter_ns()
+                  subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                  samples.append((time.perf_counter_ns() - start) / 1_000_000)
+              samples = samples[1:]  # discard cold first invocation
+              p50 = statistics.median(samples)
+              p95 = sorted(samples)[int(len(samples) * 0.95) - 1]
+              print(f"{label:12s} p50={p50:8.3f} ms  p95={p95:8.3f} ms  n={len(samples)}")
+          PY
+
       - name: Shootout report
         shell: bash
         run: |
-          set -euxo pipefail
+          set -u
           echo '=== generated C bytes ==='
-          wc -c build/direct-melodica.c build/mir-melodica.c "$RUNNER_TEMP/codin.c"
+          wc -c build/direct-melodica.c build/mir-melodica.c build/direct-control.c build/mir-control.c "$RUNNER_TEMP/codin.c"
+          if test -f "$RUNNER_TEMP/codin-control.c"; then
+            wc -c "$RUNNER_TEMP/codin-control.c"
+          fi
           echo '=== GCC executable sections ==='
-          size build/smoke-direct-gcc build/smoke-mir-gcc "$RUNNER_TEMP/codin-smoke"
+          size build/smoke-direct-gcc build/smoke-mir-gcc build/control-direct-gcc build/control-mir-gcc "$RUNNER_TEMP/codin-smoke"
           echo '=== Clang executable sections ==='
-          size build/smoke-direct-clang build/smoke-mir-clang
+          size build/smoke-direct-clang build/smoke-mir-clang build/control-direct-clang build/control-mir-clang
