@@ -7,7 +7,13 @@ package main
 
 c99_target_is_fallthrough :: proc(m: ^MIR_Module, target: Block_ID, op_index: int) -> bool {
 	if target == INVALID_BLOCK do return false
-	return int(m.blocks[int(target)].first_op) == op_index + 1
+	block := &m.blocks[int(target)]
+	// Preserve explicit edges into loop headers and joins. Besides making the C
+	// CFG easier for optimizers to recognize, a multiply-reached block is not a
+	// particularly meaningful lexical fallthrough. Single-predecessor blocks are
+	// the safe/cheap places to cash explicit MIR edges back into compact C.
+	if block.incoming != 1 do return false
+	return int(block.first_op) == op_index + 1
 }
 
 c99_layout_needs_labels :: proc(m: ^MIR_Module) -> []bool {
