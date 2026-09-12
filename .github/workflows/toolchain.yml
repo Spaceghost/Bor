@@ -1,0 +1,22 @@
+name: Verified development toolchain
+on:
+  push:
+    paths: ['.github/workflows/toolchain.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  toolchain:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Fetch pinned Odin development compiler
+        run: |
+          curl --fail --location --retry 3 --output odin.tar.gz https://github.com/odin-lang/Odin/releases/download/dev-2026-09/odin-linux-amd64-dev-2026-09.tar.gz
+          echo '167c3e1d7056419dad2e04bb3bd98715b7ff286d4c125f3c5a5ee337c6254283  odin.tar.gz' | sha256sum -c -
+      - uses: actions/upload-artifact@v4
+        with:
+          name: odin-dev-2026-09-linux-amd64
+          path: odin.tar.gz
+          retention-days: 3
+          compression-level: 0
