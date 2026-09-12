@@ -11,6 +11,8 @@ permissions:
 env:
   ODIN_VERSION: dev-2026-09
   ODIN_SHA256: 167c3e1d7056419dad2e04bb3bd98715b7ff286d4c125f3c5a5ee337c6254283
+  ZIG_VERSION: 0.16.0
+  ZIG_SHA256: 70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00
   CODIN_SHA: 5cd28a63023c24079f16e9a51a0140501cebdfa2
   THOR_SHA: 5e7a2fa67063ca71d7efabb90fbde66a8c91d2fe
 
@@ -31,11 +33,48 @@ jobs:
           tar -xzf "$RUNNER_TEMP/odin.tar.gz" -C "$RUNNER_TEMP/odin" --strip-components=1
           echo "$RUNNER_TEMP/odin" >> "$GITHUB_PATH"
 
+      - name: Install pinned Zig
+        shell: bash
+        run: |
+          set -euxo pipefail
+          curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" -o "$RUNNER_TEMP/zig.tar.xz"
+          echo "${ZIG_SHA256}  $RUNNER_TEMP/zig.tar.xz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/zig"
+          tar -xJf "$RUNNER_TEMP/zig.tar.xz" -C "$RUNNER_TEMP/zig" --strip-components=1
+          echo "$RUNNER_TEMP/zig" >> "$GITHUB_PATH"
+
       - name: Build Bor and prove both strict C99 backends
         run: make test
 
+      - name: Prove MIR dump determinism
+        shell: bash
+        run: |
+          set -euxo pipefail
+          build/bor dump-mir test/melodica -o "$RUNNER_TEMP/mir-a.txt"
+          build/bor dump-mir test/melodica -o "$RUNNER_TEMP/mir-b.txt"
+          cmp "$RUNNER_TEMP/mir-a.txt" "$RUNNER_TEMP/mir-b.txt"
+          grep -q 'jump_if_false' "$RUNNER_TEMP/mir-a.txt"
+          grep -q 'blocks ' "$RUNNER_TEMP/mir-a.txt"
+          grep -q 'ops ' "$RUNNER_TEMP/mir-a.txt"
+
+      - name: Cross-compile generated C as freestanding objects
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p build/cross
+          for source in direct mir; do
+            zig cc -target wasm32-freestanding -std=c99 -pedantic-errors -Wall -Wextra -Werror -ffreestanding \
+              -c "build/${source}-melodica.c" -o "build/cross/${source}-wasm32.o"
+            zig cc -target aarch64-linux-musl -std=c99 -pedantic-errors -Wall -Wextra -Werror -ffreestanding \
+              -c "build/${source}-melodica.c" -o "build/cross/${source}-aarch64-linux.o"
+            zig cc -target x86_64-windows-gnu -std=c99 -pedantic-errors -Wall -Wextra -Werror -ffreestanding \
+              -c "build/${source}-melodica.c" -o "build/cross/${source}-windows-x86_64.o"
+          done
+          ls -lh build/cross
+
       - name: Benchmark Bor runtime lanes and native Odin
-        run: make bench
+        shell: bash
+        run: make bench | tee "$RUNNER_TEMP/bor-bench.txt"
 
       - name: Build Codin oracle
         shell: bash
@@ -49,7 +88,16 @@ jobs:
           "$RUNNER_TEMP/codin-smoke"
           gcc -std=c99 -pedantic-errors -Wall -Wextra -Werror -O3 "$RUNNER_TEMP/codin.c" test/c99/bench.c -o "$RUNNER_TEMP/codin-bench"
           echo '=== Codin / GCC runtime ==='
-          "$RUNNER_TEMP/codin-bench"
+          "$RUNNER_TEMP/codin-bench" | tee "$RUNNER_TEMP/codin-bench.txt"
+
+      - name: Prove all benchmark sinks agree
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cat "$RUNNER_TEMP/bor-bench.txt" "$RUNNER_TEMP/codin-bench.txt" \
+            | grep -o 'sink=[0-9]*' | sort -u > "$RUNNER_TEMP/sinks.txt"
+          cat "$RUNNER_TEMP/sinks.txt"
+          test "$(wc -l < "$RUNNER_TEMP/sinks.txt")" -eq 1
 
       - name: Parse the same fixture with modern Thor
         shell: bash
