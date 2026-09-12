@@ -1,0 +1,79 @@
+name: Semantic audit and measured shootout
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: semantic-audit-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  ODIN_VERSION: dev-2026-09
+  ODIN_SHA256: 167c3e1d7056419dad2e04bb3bd98715b7ff286d4c125f3c5a5ee337c6254283
+  CODIN_SHA: 5cd28a63023c24079f16e9a51a0140501cebdfa2
+  THOR_SHA: 5e7a2fa67063ca71d7efabb90fbde66a8c91d2fe
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install checksum-verified Odin
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 "https://github.com/odin-lang/Odin/releases/download/${ODIN_VERSION}/odin-linux-amd64-${ODIN_VERSION}.tar.gz" -o "$RUNNER_TEMP/odin.tar.gz"
+          echo "$ODIN_SHA256  $RUNNER_TEMP/odin.tar.gz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/odin"
+          tar -xzf "$RUNNER_TEMP/odin.tar.gz" -C "$RUNNER_TEMP/odin" --strip-components=1
+          echo "$RUNNER_TEMP/odin" >> "$GITHUB_PATH"
+      - name: Preserve original controls and run Odin unit tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          make test unit 2>&1 | tee build/unit-and-controls.log
+      - name: Differential corpus and rejection gate
+        run: make audit
+      - name: Build pinned references and measure overlapping workload
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone https://github.com/Spaceghost/codin.git "$RUNNER_TEMP/codin"
+          git -C "$RUNNER_TEMP/codin" checkout --detach "$CODIN_SHA"
+          make -C "$RUNNER_TEMP/codin" -j2
+          git clone https://github.com/Spaceghost/Thor.git "$RUNNER_TEMP/thor"
+          git -C "$RUNNER_TEMP/thor" checkout --detach "$THOR_SHA"
+          make -C "$RUNNER_TEMP/thor" -j2 DEBUG=1
+          make benchmark BENCH_ARGS="--codin $RUNNER_TEMP/codin/codin --thor $RUNNER_TEMP/thor/thor"
+      - name: Record revision and compiler checksum
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p build
+          printf '%s\n' "$GITHUB_SHA" > build/revision.txt
+          if test -f build/bor; then sha256sum build/bor > build/bor.sha256; fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bor-semantic-evidence-${{ github.run_id }}
+          retention-days: 14
+          if-no-files-found: error
+          path: |
+            build/bor
+            build/bor.sha256
+            build/revision.txt
+            build/unit-and-controls.log
+            build/audit/report.json
+            build/audit/*.c
+            build/audit/*.mir
+            build/audit/*.stdout
+            build/audit/*.stderr
+            build/audit/generated/
+            build/audit/reject-*/
+            build/benchmark/report.json
+            build/benchmark/*.c
+            build/benchmark/thor.ast
