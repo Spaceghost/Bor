@@ -9,19 +9,30 @@ usage :: proc() {
 	fmt.eprintln("usage: bor <emit-c|emit-c-direct|emit-c-mir> <odin-package-directory> -o <output.c>")
 }
 
-// The tooling parser canonicalizes proc "c" to the C declaration spelling.
-// Keep the old direct backend as a shootout control without teaching it that
-// parser detail in two places.
-normalize_direct_c_alias :: proc(pkg: ^ast.Package) {
+decl_is_exported :: proc(d: ^ast.Value_Decl) -> bool {
+	if d == nil do return false
+	for attribute in d.attributes {
+		if attribute == nil do continue
+		for elem in attribute.elems {
+			if ident, ok := elem.derived.(^ast.Ident); ok && ident.name == "export" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// The direct backend predates linkage as an explicit lowering property. Keep it
+// as a shootout control by marking only declarations carrying @(export) as
+// externally visible. Calling convention remains a separate semantic fact.
+normalize_direct_exports :: proc(pkg: ^ast.Package) {
 	for _, file in pkg.files {
 		for stmt in file.decls {
 			d, is_decl := stmt.derived.(^ast.Value_Decl)
-			if !is_decl || len(d.values) != 1 do continue
+			if !is_decl || !decl_is_exported(d) || len(d.values) != 1 do continue
 			p, is_proc := d.values[0].derived.(^ast.Proc_Lit)
 			if !is_proc || p.type == nil do continue
-			if cc, ok := p.type.calling_convention.(string); ok && cc == "cdecl" {
-				p.type.calling_convention = "c"
-			}
+			p.type.calling_convention = "c"
 		}
 	}
 }
@@ -53,7 +64,7 @@ main :: proc() {
 		if !lowered do os.exit(1)
 		generated, emitted = emit_mir_c99(&m)
 	} else {
-		normalize_direct_c_alias(pkg)
+		normalize_direct_exports(pkg)
 		generated, emitted = emit_c99(pkg)
 	}
 
