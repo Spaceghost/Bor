@@ -359,9 +359,15 @@ emit_stmt :: proc(e: ^Emitter, stmt: ^ast.Stmt) -> bool {
 			return fail(e, "if initializer")
 		}
 		indent(e)
-		write(e, "if (")
-		if !emit_expr(e, n.cond) do return false
-		write(e, ") ")
+		if _, binary_condition := n.cond.derived.(^ast.Binary_Expr); binary_condition {
+			write(e, "if ")
+			if !emit_expr(e, n.cond) do return false
+			write(e, " ")
+		} else {
+			write(e, "if (")
+			if !emit_expr(e, n.cond) do return false
+			write(e, ") ")
+		}
 		if !emit_block(e, n.body) do return false
 		if n.else_stmt != nil {
 			indent(e)
