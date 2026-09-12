@@ -49,6 +49,24 @@ jobs:
           done
           echo 'Bor: deterministic emission proved for both backends and all workloads'
 
+      - name: Prove verified MIR is inspectable and deterministic
+        shell: bash
+        run: |
+          set -euo pipefail
+          for fixture in melodica linkage control; do
+            a="$RUNNER_TEMP/${fixture}-a.mir"
+            b="$RUNNER_TEMP/${fixture}-b.mir"
+            build/bor dump-mir "test/$fixture" -o "$a"
+            build/bor dump-mir "test/$fixture" -o "$b"
+            cmp "$a" "$b"
+          done
+          grep -Eq 'proc #[0-9]+ @internal_c : u32 internal cc=c' "$RUNNER_TEMP/linkage-a.mir"
+          grep -Eq 'proc #[0-9]+ @public_c : u32 external cc=c' "$RUNNER_TEMP/linkage-a.mir"
+          grep -Fq ' = xor ' "$RUNNER_TEMP/control-a.mir"
+          grep -Fq 'jump_false ' "$RUNNER_TEMP/control-a.mir"
+          grep -Eq 'proc #[0-9]+ @control_mix : u32 external cc=c' "$RUNNER_TEMP/control-a.mir"
+          echo 'Bor: verified MIR dump preserves linkage, control-flow, and operator semantics'
+
       - name: Build Codin oracle
         shell: bash
         run: |
@@ -130,6 +148,8 @@ jobs:
           if test -f "$RUNNER_TEMP/codin-control.c"; then
             wc -c "$RUNNER_TEMP/codin-control.c"
           fi
+          echo '=== verified MIR bytes ==='
+          wc -c "$RUNNER_TEMP/melodica-a.mir" "$RUNNER_TEMP/linkage-a.mir" "$RUNNER_TEMP/control-a.mir"
           echo '=== GCC executable sections ==='
           size build/smoke-direct-gcc build/smoke-mir-gcc build/control-direct-gcc build/control-mir-gcc "$RUNNER_TEMP/codin-smoke"
           echo '=== Clang executable sections ==='
