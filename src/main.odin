@@ -22,10 +22,10 @@ decl_is_exported :: proc(d: ^ast.Value_Decl) -> bool {
 	return false
 }
 
-// The direct backend predates linkage as an explicit lowering property. Keep it
-// as a shootout control by marking only declarations carrying @(export) as
-// externally visible. Calling convention remains a separate semantic fact.
-normalize_direct_exports :: proc(pkg: ^ast.Package) {
+// Bootstrap compatibility bridge: both current backends still encode linkage
+// beside calling-convention data. Only @(export) declarations are rewritten.
+// The MIR will own linkage as an independent property once the shootout settles.
+normalize_export_linkage :: proc(pkg: ^ast.Package) {
 	for _, file in pkg.files {
 		for stmt in file.decls {
 			d, is_decl := stmt.derived.(^ast.Value_Decl)
@@ -54,6 +54,7 @@ main :: proc() {
 		fmt.eprintfln("bor: failed to parse %s with core:odin/parser", os.args[2])
 		os.exit(1)
 	}
+	normalize_export_linkage(pkg)
 
 	generated: string
 	emitted := false
@@ -64,7 +65,6 @@ main :: proc() {
 		if !lowered do os.exit(1)
 		generated, emitted = emit_mir_c99(&m)
 	} else {
-		normalize_direct_exports(pkg)
 		generated, emitted = emit_c99(pkg)
 	}
 
