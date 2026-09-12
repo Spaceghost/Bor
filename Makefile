@@ -5,8 +5,9 @@ BUILD := build
 BOR := $(BUILD)/bor
 DIRECT_C := $(BUILD)/direct-melodica.c
 MIR_C := $(BUILD)/mir-melodica.c
+CFLAGS_STRICT := -std=c99 -pedantic-errors -Wall -Wextra -Werror -O3
 
-.PHONY: all bor emit test clean
+.PHONY: all bor emit test bench clean
 
 all: test
 
@@ -27,16 +28,16 @@ $(MIR_C): $(BOR) test/melodica/main.odin
 	$(BOR) emit-c-mir test/melodica -o $@
 
 $(BUILD)/smoke-direct-gcc: $(DIRECT_C) test/c99/smoke.c
-	$(CC) -std=c99 -pedantic-errors -Wall -Wextra -Werror -O3 $(DIRECT_C) test/c99/smoke.c -o $@
+	$(CC) $(CFLAGS_STRICT) $(DIRECT_C) test/c99/smoke.c -o $@
 
 $(BUILD)/smoke-direct-clang: $(DIRECT_C) test/c99/smoke.c
-	$(CLANG) -std=c99 -pedantic-errors -Wall -Wextra -Werror -O3 $(DIRECT_C) test/c99/smoke.c -o $@
+	$(CLANG) $(CFLAGS_STRICT) $(DIRECT_C) test/c99/smoke.c -o $@
 
 $(BUILD)/smoke-mir-gcc: $(MIR_C) test/c99/smoke.c
-	$(CC) -std=c99 -pedantic-errors -Wall -Wextra -Werror -O3 $(MIR_C) test/c99/smoke.c -o $@
+	$(CC) $(CFLAGS_STRICT) $(MIR_C) test/c99/smoke.c -o $@
 
 $(BUILD)/smoke-mir-clang: $(MIR_C) test/c99/smoke.c
-	$(CLANG) -std=c99 -pedantic-errors -Wall -Wextra -Werror -O3 $(MIR_C) test/c99/smoke.c -o $@
+	$(CLANG) $(CFLAGS_STRICT) $(MIR_C) test/c99/smoke.c -o $@
 
 $(BUILD)/native-melodica.a: test/melodica/main.odin | $(BUILD)
 	$(ODIN) build test/melodica -build-mode:static -out:$@ -o:speed -reloc-mode:pic -no-entry-point
@@ -51,6 +52,33 @@ test: $(BUILD)/smoke-direct-gcc $(BUILD)/smoke-direct-clang $(BUILD)/smoke-mir-g
 	./$(BUILD)/smoke-mir-clang
 	./$(BUILD)/smoke-native
 	@echo 'Bor: direct C99, flat MIR C99, and native Odin behavior agree'
+
+$(BUILD)/bench-direct-gcc: $(DIRECT_C) test/c99/bench.c
+	$(CC) $(CFLAGS_STRICT) $(DIRECT_C) test/c99/bench.c -o $@
+
+$(BUILD)/bench-direct-clang: $(DIRECT_C) test/c99/bench.c
+	$(CLANG) $(CFLAGS_STRICT) $(DIRECT_C) test/c99/bench.c -o $@
+
+$(BUILD)/bench-mir-gcc: $(MIR_C) test/c99/bench.c
+	$(CC) $(CFLAGS_STRICT) $(MIR_C) test/c99/bench.c -o $@
+
+$(BUILD)/bench-mir-clang: $(MIR_C) test/c99/bench.c
+	$(CLANG) $(CFLAGS_STRICT) $(MIR_C) test/c99/bench.c -o $@
+
+$(BUILD)/bench-native: $(BUILD)/native-melodica.a test/c99/bench.c
+	$(CC) -std=c11 -Wall -Wextra -Werror -O3 test/c99/bench.c $(BUILD)/native-melodica.a -lm -ldl -lpthread -o $@
+
+bench: $(BUILD)/bench-direct-gcc $(BUILD)/bench-direct-clang $(BUILD)/bench-mir-gcc $(BUILD)/bench-mir-clang $(BUILD)/bench-native
+	@echo '=== Bor direct / GCC ==='
+	./$(BUILD)/bench-direct-gcc
+	@echo '=== Bor MIR / GCC ==='
+	./$(BUILD)/bench-mir-gcc
+	@echo '=== Bor direct / Clang ==='
+	./$(BUILD)/bench-direct-clang
+	@echo '=== Bor MIR / Clang ==='
+	./$(BUILD)/bench-mir-clang
+	@echo '=== native Odin ==='
+	./$(BUILD)/bench-native
 
 clean:
 	rm -rf $(BUILD)
