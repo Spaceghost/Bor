@@ -119,6 +119,8 @@ MIR_Procedure :: struct {
 	entry:              Block_ID,
 	first_block:        u32,
 	block_count:        u32,
+	first_op:           u32,
+	op_count:           u32,
 	first_value:        u32,
 	value_count:        u32,
 	param_first:        u32,
@@ -126,18 +128,19 @@ MIR_Procedure :: struct {
 }
 
 MIR_Global :: struct {
-	name: string,
-	type: MIR_Type,
-	init: string,
+	name:     string,
+	type:     MIR_Type,
+	init:     string,
+	value_id: Value_ID,
 }
 
 MIR_Module :: struct {
-	globals:   [dynamic]MIR_Global,
-	procedures:[dynamic]MIR_Procedure,
-	blocks:    [dynamic]Basic_Block,
-	ops:       [dynamic]MIR_Inst,
-	values:    [dynamic]MIR_Value,
-	call_args: [dynamic]Value_ID,
+	globals:    [dynamic]MIR_Global,
+	procedures: [dynamic]MIR_Procedure,
+	blocks:     [dynamic]Basic_Block,
+	ops:        [dynamic]MIR_Inst,
+	values:     [dynamic]MIR_Value,
+	call_args:  [dynamic]Value_ID,
 }
 
 mir_destroy :: proc(m: ^MIR_Module) {
