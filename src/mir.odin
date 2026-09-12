@@ -81,6 +81,9 @@ Op_Kind :: enum u8 {
 	Store_Index,
 	Call,
 	Jump,
+	Branch,
+	// Bootstrap-only conditional terminator. Semantic normalization rewrites
+	// this fallthrough-shaped form into Branch before verification/backend use.
 	Jump_If_False,
 	Return,
 }
@@ -89,17 +92,18 @@ Op_Kind :: enum u8 {
 // bytes for simple allocation, iteration, serialization, instrumentation, and
 // backend code. Fields are interpreted by `kind`.
 MIR_Inst :: struct {
-	kind:       Op_Kind,
-	type:       MIR_Type,
-	dst:        Value_ID,
-	a:          Value_ID,
-	b:          Value_ID,
-	bin_op:     Binary_Op,
-	unary_op:   Unary_Op,
-	target:     Block_ID,
-	callee:     Proc_ID,
-	args_first: u32,
-	args_count: u32,
+	kind:        Op_Kind,
+	type:        MIR_Type,
+	dst:         Value_ID,
+	a:           Value_ID,
+	b:           Value_ID,
+	bin_op:      Binary_Op,
+	unary_op:    Unary_Op,
+	target:      Block_ID, // Jump target or Branch true target
+	target_else: Block_ID, // Branch false target
+	callee:      Proc_ID,
+	args_first:  u32,
+	args_count:  u32,
 }
 
 Basic_Block :: struct {
