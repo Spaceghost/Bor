@@ -3,16 +3,15 @@ package main
 import "core:strings"
 
 mir_c_type :: proc(t: MIR_Type) -> (string, bool) {
-	switch t {
+	#partial switch t {
 	case .Void:    return "void", true
 	case .Bool:    return "bool", true
 	case .U8:      return "uint8_t", true
 	case .U32:     return "uint32_t", true
 	case .UIntptr: return "uintptr_t", true
 	case .U8_Ptr:  return "uint8_t *", true
-	case:
-		return "", false
 	}
+	return "", false
 }
 
 write_id :: proc(b: ^strings.Builder, id: int) {
@@ -29,7 +28,7 @@ write_block_label :: proc(b: ^strings.Builder, proc_id: int, block: Block_ID) {
 write_value_ref :: proc(b: ^strings.Builder, m: ^MIR_Module, id: Value_ID) {
 	assert(id != INVALID_VALUE)
 	v := &m.values[int(id)]
-	switch v.kind {
+	#partial switch v.kind {
 	case .Literal:
 		strings.write_string(b, v.literal)
 	case .Null:
@@ -39,13 +38,11 @@ write_value_ref :: proc(b: ^strings.Builder, m: ^MIR_Module, id: Value_ID) {
 	case .Local, .Temp:
 		strings.write_string(b, "_bor_v")
 		write_id(b, int(id))
-	case:
-		assert(false, "invalid MIR value in C99 emitter")
 	}
 }
 
 write_binary_op :: proc(b: ^strings.Builder, op: Binary_Op) {
-	switch op {
+	#partial switch op {
 	case .Add:             strings.write_string(b, "+")
 	case .Sub:             strings.write_string(b, "-")
 	case .Mul:             strings.write_string(b, "*")
@@ -64,19 +61,15 @@ write_binary_op :: proc(b: ^strings.Builder, op: Binary_Op) {
 	case .Greater_Equal:   strings.write_string(b, ">=")
 	case .Logical_And:     strings.write_string(b, "&&")
 	case .Logical_Or:      strings.write_string(b, "||")
-	case:
-		assert(false, "unsupported MIR binary operator")
 	}
 }
 
 write_unary_op :: proc(b: ^strings.Builder, op: Unary_Op) {
-	switch op {
+	#partial switch op {
 	case .Positive:    strings.write_string(b, "+")
 	case .Negative:    strings.write_string(b, "-")
 	case .Logical_Not: strings.write_string(b, "!")
 	case .Bit_Not:     strings.write_string(b, "~")
-	case:
-		assert(false, "unsupported MIR unary operator")
 	}
 }
 
@@ -110,7 +103,7 @@ emit_mir_proc_head :: proc(b: ^strings.Builder, m: ^MIR_Module, proc_id: int, pr
 }
 
 emit_mir_inst :: proc(b: ^strings.Builder, m: ^MIR_Module, proc_id: int, op: ^MIR_Inst) -> bool {
-	switch op.kind {
+	#partial switch op.kind {
 	case .Label:
 		write_block_label(b, proc_id, op.target)
 		strings.write_string(b, ": ;\n")
@@ -210,7 +203,6 @@ emit_mir_inst :: proc(b: ^strings.Builder, m: ^MIR_Module, proc_id: int, op: ^MI
 			write_value_ref(b, m, op.a)
 		}
 		strings.write_string(b, ";\n")
-
 	case:
 		return false
 	}
@@ -237,8 +229,7 @@ emit_mir_c99 :: proc(m: ^MIR_Module) -> (string, bool) {
 	}
 	strings.write_string(&b, "\n")
 
-	for p, proc_id in m.procedures {
-		_ = p
+	for _, proc_id in m.procedures {
 		if !emit_mir_proc_head(&b, m, proc_id, true) do return "", false
 	}
 	strings.write_string(&b, "\n")
