@@ -60,11 +60,15 @@ jobs:
             build/bor dump-mir "test/$fixture" -o "$b"
             cmp "$a" "$b"
           done
-          grep -Eq 'proc #[0-9]+ @internal_c : u32 internal cc=c' "$RUNNER_TEMP/linkage-a.mir"
-          grep -Eq 'proc #[0-9]+ @public_c : u32 external cc=c' "$RUNNER_TEMP/linkage-a.mir"
-          grep -Fq ' = xor ' "$RUNNER_TEMP/control-a.mir"
-          grep -Fq 'jump_false ' "$RUNNER_TEMP/control-a.mir"
-          grep -Eq 'proc #[0-9]+ @control_mix : u32 external cc=c' "$RUNNER_TEMP/control-a.mir"
+          echo '=== linkage MIR ==='
+          cat "$RUNNER_TEMP/linkage-a.mir"
+          echo '=== control MIR ==='
+          cat "$RUNNER_TEMP/control-a.mir"
+          grep -Eq 'proc #[0-9]+ @internal_c : u32 internal cc=c' "$RUNNER_TEMP/linkage-a.mir" || { echo 'missing internal C-ABI linkage metadata' >&2; exit 1; }
+          grep -Eq 'proc #[0-9]+ @public_c : u32 external cc=c' "$RUNNER_TEMP/linkage-a.mir" || { echo 'missing exported C-ABI linkage metadata' >&2; exit 1; }
+          grep -Fq ' = xor ' "$RUNNER_TEMP/control-a.mir" || { echo 'missing MIR xor lowering' >&2; exit 1; }
+          grep -Fq 'jump_false ' "$RUNNER_TEMP/control-a.mir" || { echo 'missing MIR conditional branch' >&2; exit 1; }
+          grep -Eq 'proc #[0-9]+ @control_mix : u32 external cc=c' "$RUNNER_TEMP/control-a.mir" || { echo 'missing exported control_mix ABI metadata' >&2; exit 1; }
           echo 'Bor: verified MIR dump preserves linkage, control-flow, and operator semantics'
 
       - name: Build Codin oracle
