@@ -249,7 +249,7 @@ lower_expr :: proc(l: ^Lowerer, expr: ^ast.Expr) -> (Value_ID, bool) {
 	case ^ast.Ident:
 		if n.name == "nil" do return new_value(l, .Null, .U8_Ptr, literal = "NULL"), true
 		if id, found := lookup_value(l, n.name); found do return id, true
-		lower_fail(l, &expr.node, "unknown identifier %s", n.name)
+		lower_fail(l, &expr.expr_base, "unknown identifier %s", n.name)
 		return INVALID_VALUE, false
 
 	case ^ast.Basic_Lit:
@@ -266,7 +266,7 @@ lower_expr :: proc(l: ^Lowerer, expr: ^ast.Expr) -> (Value_ID, bool) {
 		index, index_ok := lower_expr(l, n.index)
 		if !index_ok do return INVALID_VALUE, false
 		if value_type(l, base) != .U8_Ptr {
-			lower_fail(l, &expr.node, "unsupported index base type")
+			lower_fail(l, &expr.expr_base, "unsupported index base type")
 			return INVALID_VALUE, false
 		}
 		dst := new_temp(l, .U8)
@@ -276,12 +276,12 @@ lower_expr :: proc(l: ^Lowerer, expr: ^ast.Expr) -> (Value_ID, bool) {
 	case ^ast.Call_Expr:
 		name, named := mir_ident_name(n.expr)
 		if !named {
-			lower_fail(l, &expr.node, "indirect call")
+			lower_fail(l, &expr.expr_base, "indirect call")
 			return INVALID_VALUE, false
 		}
 		if cast_type := mir_type_from_ast(n.expr); cast_type != .Invalid {
 			if len(n.args) != 1 {
-				lower_fail(l, &expr.node, "scalar cast argument count")
+				lower_fail(l, &expr.expr_base, "scalar cast argument count")
 				return INVALID_VALUE, false
 			}
 			source, source_ok := lower_expr(l, n.args[0])
@@ -292,7 +292,7 @@ lower_expr :: proc(l: ^Lowerer, expr: ^ast.Expr) -> (Value_ID, bool) {
 		}
 		callee, found := l.proc_ids[name]
 		if !found {
-			lower_fail(l, &expr.node, "unknown procedure %s", name)
+			lower_fail(l, &expr.expr_base, "unknown procedure %s", name)
 			return INVALID_VALUE, false
 		}
 		first_arg := u32(len(l.m.call_args))
@@ -310,7 +310,7 @@ lower_expr :: proc(l: ^Lowerer, expr: ^ast.Expr) -> (Value_ID, bool) {
 	case ^ast.Unary_Expr:
 		op, supported := unary_op(n.op.text)
 		if !supported {
-			lower_fail(l, &expr.node, "unary operator %s", n.op.text)
+			lower_fail(l, &expr.expr_base, "unary operator %s", n.op.text)
 			return INVALID_VALUE, false
 		}
 		a, operand_ok := lower_expr(l, n.expr)
@@ -325,12 +325,12 @@ lower_expr :: proc(l: ^Lowerer, expr: ^ast.Expr) -> (Value_ID, bool) {
 		if n.op.text == "&&" do return lower_logical_and(l, n)
 		if n.op.text == "||" do return lower_logical_or(l, n)
 		if n.op.text == "..<" || n.op.text == "..=" {
-			lower_fail(l, &expr.node, "range expression outside range statement")
+			lower_fail(l, &expr.expr_base, "range expression outside range statement")
 			return INVALID_VALUE, false
 		}
 		op, supported := binary_op(n.op.text)
 		if !supported {
-			lower_fail(l, &expr.node, "binary operator %s", n.op.text)
+			lower_fail(l, &expr.expr_base, "binary operator %s", n.op.text)
 			return INVALID_VALUE, false
 		}
 		a, left_ok := lower_expr(l, n.left)
@@ -345,7 +345,7 @@ lower_expr :: proc(l: ^Lowerer, expr: ^ast.Expr) -> (Value_ID, bool) {
 	case ^ast.Type_Cast:
 		t := mir_type_from_ast(n.type)
 		if t == .Invalid {
-			lower_fail(l, &expr.node, "cast type")
+			lower_fail(l, &expr.expr_base, "cast type")
 			return INVALID_VALUE, false
 		}
 		a, operand_ok := lower_expr(l, n.expr)
@@ -355,7 +355,7 @@ lower_expr :: proc(l: ^Lowerer, expr: ^ast.Expr) -> (Value_ID, bool) {
 		return dst, true
 	}
 
-	lower_fail(l, &expr.node, "expression AST kind")
+	lower_fail(l, &expr.expr_base, "expression AST kind")
 	return INVALID_VALUE, false
 }
 
