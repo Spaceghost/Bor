@@ -51,7 +51,7 @@ mir_verify :: proc(m: ^MIR_Module) -> bool {
 
 	incoming := make([]u32, len(m.blocks), context.temp_allocator)
 
-	for p, pi in m.procedures {
+	for &p, pi in m.procedures {
 		if p.name == "" do return mir_verify_fail("proc %d has no name", pi)
 		if p.result == .Invalid do return mir_verify_fail("proc %d (%s) has invalid result type", pi, p.name)
 		if !mir_range_fits(p.first_block, p.block_count, len(m.blocks)) {
@@ -78,7 +78,7 @@ mir_verify :: proc(m: ^MIR_Module) -> bool {
 		if p.block_count == 0 {
 			return mir_verify_fail("proc %d (%s) has no basic blocks", pi, p.name)
 		}
-		if !mir_block_in_proc(&p, p.entry) {
+		if !mir_block_in_proc(p, p.entry) {
 			return mir_verify_fail("proc %d (%s) entry block is outside procedure", pi, p.name)
 		}
 
@@ -120,7 +120,7 @@ mir_verify :: proc(m: ^MIR_Module) -> bool {
 
 			#partial switch op.kind {
 			case .Label:
-				if !mir_block_in_proc(&p, op.target) do return mir_verify_fail("proc %d op %d labels foreign block", pi, oi)
+				if !mir_block_in_proc(p, op.target) do return mir_verify_fail("proc %d op %d labels foreign block", pi, oi)
 			case .Assign:
 				if !mir_require_value(m, op.dst, pi, oi, "dst") || !mir_require_value(m, op.a, pi, oi, "source") do return false
 			case .Unary:
@@ -144,11 +144,11 @@ mir_verify :: proc(m: ^MIR_Module) -> bool {
 					if !mir_require_value(m, m.call_args[ai], pi, oi, "call argument") do return false
 				}
 			case .Jump:
-				if !mir_block_in_proc(&p, op.target) do return mir_verify_fail("proc %d op %d jumps to foreign block", pi, oi)
+				if !mir_block_in_proc(p, op.target) do return mir_verify_fail("proc %d op %d jumps to foreign block", pi, oi)
 				incoming[int(op.target)] += 1
 			case .Jump_If_False:
 				if !mir_require_value(m, op.a, pi, oi, "condition") do return false
-				if !mir_block_in_proc(&p, op.target) do return mir_verify_fail("proc %d op %d conditionally jumps to foreign block", pi, oi)
+				if !mir_block_in_proc(p, op.target) do return mir_verify_fail("proc %d op %d conditionally jumps to foreign block", pi, oi)
 				incoming[int(op.target)] += 1
 			case .Return:
 				if op.a != INVALID_VALUE && !mir_require_value(m, op.a, pi, oi, "return") do return false
