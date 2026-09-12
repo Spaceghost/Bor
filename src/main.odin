@@ -54,7 +54,6 @@ apply_mir_export_linkage :: proc(m: ^MIR_Module, pkg: ^ast.Package) {
 					p.external = true
 					break
 				}
-			}
 		}
 	}
 }
@@ -80,7 +79,9 @@ main :: proc() {
 	generated: string
 	emitted := false
 
-	if command == "emit-c-mir" {
+	// The MIR lane won the first correctness/size/runtime shootout, so it is the
+	// product default. The direct lane remains available as an always-on control.
+	if command == "emit-c" || command == "emit-c-mir" {
 		m, lowered := lower_package_to_mir(pkg)
 		defer mir_destroy(&m)
 		if !lowered do os.exit(1)
