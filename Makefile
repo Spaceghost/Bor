@@ -3,7 +3,8 @@ CC ?= cc
 CLANG ?= clang
 BUILD := build
 BOR := $(BUILD)/bor
-BOR_C := $(BUILD)/bor-melodica.c
+DIRECT_C := $(BUILD)/direct-melodica.c
+MIR_C := $(BUILD)/mir-melodica.c
 
 .PHONY: all bor emit test clean
 
@@ -14,20 +15,28 @@ $(BUILD):
 
 bor: $(BOR)
 
-$(BOR): src/main.odin | $(BUILD)
+$(BOR): src/*.odin | $(BUILD)
 	$(ODIN) build src -out:$(BOR) -o:speed
 
-emit: $(BOR)
-	$(BOR) emit-c test/melodica -o $(BOR_C)
+emit: $(DIRECT_C) $(MIR_C)
 
-$(BOR_C): $(BOR) test/melodica/main.odin
-	$(BOR) emit-c test/melodica -o $(BOR_C)
+$(DIRECT_C): $(BOR) test/melodica/main.odin
+	$(BOR) emit-c-direct test/melodica -o $@
 
-$(BUILD)/smoke-gcc: $(BOR_C) test/c99/smoke.c
-	$(CC) -std=c99 -pedantic-errors -Wall -Wextra -Werror -O3 $(BOR_C) test/c99/smoke.c -o $@
+$(MIR_C): $(BOR) test/melodica/main.odin
+	$(BOR) emit-c-mir test/melodica -o $@
 
-$(BUILD)/smoke-clang: $(BOR_C) test/c99/smoke.c
-	$(CLANG) -std=c99 -pedantic-errors -Wall -Wextra -Werror -O3 $(BOR_C) test/c99/smoke.c -o $@
+$(BUILD)/smoke-direct-gcc: $(DIRECT_C) test/c99/smoke.c
+	$(CC) -std=c99 -pedantic-errors -Wall -Wextra -Werror -O3 $(DIRECT_C) test/c99/smoke.c -o $@
+
+$(BUILD)/smoke-direct-clang: $(DIRECT_C) test/c99/smoke.c
+	$(CLANG) -std=c99 -pedantic-errors -Wall -Wextra -Werror -O3 $(DIRECT_C) test/c99/smoke.c -o $@
+
+$(BUILD)/smoke-mir-gcc: $(MIR_C) test/c99/smoke.c
+	$(CC) -std=c99 -pedantic-errors -Wall -Wextra -Werror -O3 $(MIR_C) test/c99/smoke.c -o $@
+
+$(BUILD)/smoke-mir-clang: $(MIR_C) test/c99/smoke.c
+	$(CLANG) -std=c99 -pedantic-errors -Wall -Wextra -Werror -O3 $(MIR_C) test/c99/smoke.c -o $@
 
 $(BUILD)/native-melodica.a: test/melodica/main.odin | $(BUILD)
 	$(ODIN) build test/melodica -build-mode:static -out:$@ -o:speed -reloc-mode:pic -no-entry-point
@@ -35,11 +44,13 @@ $(BUILD)/native-melodica.a: test/melodica/main.odin | $(BUILD)
 $(BUILD)/smoke-native: $(BUILD)/native-melodica.a test/c99/smoke.c
 	$(CC) -std=c11 -Wall -Wextra -Werror -O2 test/c99/smoke.c $(BUILD)/native-melodica.a -lm -ldl -lpthread -o $@
 
-test: $(BUILD)/smoke-gcc $(BUILD)/smoke-clang $(BUILD)/smoke-native
-	./$(BUILD)/smoke-gcc
-	./$(BUILD)/smoke-clang
+test: $(BUILD)/smoke-direct-gcc $(BUILD)/smoke-direct-clang $(BUILD)/smoke-mir-gcc $(BUILD)/smoke-mir-clang $(BUILD)/smoke-native
+	./$(BUILD)/smoke-direct-gcc
+	./$(BUILD)/smoke-direct-clang
+	./$(BUILD)/smoke-mir-gcc
+	./$(BUILD)/smoke-mir-clang
 	./$(BUILD)/smoke-native
-	@echo 'Bor: strict C99 GCC + Clang + native Odin behavior agree'
+	@echo 'Bor: direct C99, flat MIR C99, and native Odin behavior agree'
 
 clean:
 	rm -rf $(BUILD)
