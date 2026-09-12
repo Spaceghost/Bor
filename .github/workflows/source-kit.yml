@@ -1,0 +1,37 @@
+name: Reproducible source kit
+on:
+  push:
+    paths: ['.github/workflows/source-kit.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  source-kit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Archive exact source and pinned references
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir kit
+          git archive --format=tar.gz --prefix=Bor/ HEAD > kit/Bor.tar.gz
+          printf 'bor %s\n' "$GITHUB_SHA" > kit/revisions.txt
+          git clone https://github.com/Spaceghost/codin.git "$RUNNER_TEMP/codin"
+          git -C "$RUNNER_TEMP/codin" checkout --detach 5cd28a63023c24079f16e9a51a0140501cebdfa2
+          git -C "$RUNNER_TEMP/codin" archive --format=tar.gz --prefix=codin/ HEAD > kit/codin.tar.gz
+          printf 'codin %s\n' "$(git -C "$RUNNER_TEMP/codin" rev-parse HEAD)" >> kit/revisions.txt
+          git clone https://github.com/Spaceghost/Thor.git "$RUNNER_TEMP/thor"
+          git -C "$RUNNER_TEMP/thor" checkout --detach 5e7a2fa67063ca71d7efabb90fbde66a8c91d2fe
+          git -C "$RUNNER_TEMP/thor" archive --format=tar.gz --prefix=Thor/ HEAD > kit/Thor.tar.gz
+          printf 'thor %s\n' "$(git -C "$RUNNER_TEMP/thor" rev-parse HEAD)" >> kit/revisions.txt
+          (cd kit && sha256sum *.tar.gz > SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bor-source-kit-${{ github.run_id }}
+          path: kit/
+          if-no-files-found: error
+          retention-days: 14
