@@ -33,7 +33,7 @@ main :: proc() {
 		m, lowered := lower_package_to_mir(pkg)
 		defer mir_destroy(&m)
 		if !lowered do os.exit(1)
-		normalize_mir_semantics(pkg, &m)
+		if !normalize_mir_semantics(pkg, &m) do os.exit(1)
 		if !mir_verify(&m) do os.exit(1)
 		if command == "dump-mir" {
 			generated = mir_dump(&m)
