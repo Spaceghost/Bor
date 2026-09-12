@@ -86,6 +86,47 @@ jobs:
           gcc -std=c99 -pedantic-errors -Wall -Wextra -Werror -O3 "$RUNNER_TEMP/codin.c" test/c99/smoke.c -o "$RUNNER_TEMP/codin-smoke"
           "$RUNNER_TEMP/codin-smoke"
 
+      - name: Generated differential fuzz against native Odin
+        shell: bash
+        run: |
+          set -euo pipefail
+          for variant in 0 1 2 3; do
+            root="$RUNNER_TEMP/fuzz-$variant"
+            python3 test/fuzz/generate.py --variant "$variant" --out "$root"
+
+            build/bor emit-c-direct "$root/odin" -o "$root/direct.c"
+            build/bor emit-c-mir "$root/odin" -o "$root/mir.c"
+
+            gcc -std=c99 -pedantic-errors -Wall -Wextra -Werror -O3 "$root/direct.c" "$root/harness.c" -o "$root/direct-gcc"
+            gcc -std=c99 -pedantic-errors -Wall -Wextra -Werror -O3 "$root/mir.c" "$root/harness.c" -o "$root/mir-gcc"
+            clang -std=c99 -pedantic-errors -Wall -Wextra -Werror -O3 "$root/direct.c" "$root/harness.c" -o "$root/direct-clang"
+            clang -std=c99 -pedantic-errors -Wall -Wextra -Werror -O3 "$root/mir.c" "$root/harness.c" -o "$root/mir-clang"
+
+            odin build "$root/odin" -build-mode:static -out:"$root/native.a" -o:speed -reloc-mode:pic -no-entry-point
+            gcc -std=c11 -Wall -Wextra -Werror -O2 "$root/harness.c" "$root/native.a" -lm -ldl -lpthread -o "$root/native"
+
+            "$root/direct-gcc" > "$root/direct-gcc.out"
+            "$root/mir-gcc" > "$root/mir-gcc.out"
+            "$root/direct-clang" > "$root/direct-clang.out"
+            "$root/mir-clang" > "$root/mir-clang.out"
+            "$root/native" > "$root/native.out"
+
+            cmp "$root/native.out" "$root/direct-gcc.out"
+            cmp "$root/native.out" "$root/mir-gcc.out"
+            cmp "$root/native.out" "$root/direct-clang.out"
+            cmp "$root/native.out" "$root/mir-clang.out"
+            echo "Bor differential fuzz variant $variant: PASS"
+
+            if "$RUNNER_TEMP/codin/codin" emit-c "$root/odin" -o "$root/codin.c" \
+               && gcc -std=c99 -pedantic-errors -Wall -Wextra -Werror -O3 "$root/codin.c" "$root/harness.c" -o "$root/codin" \
+               && "$root/codin" > "$root/codin.out" \
+               && cmp "$root/native.out" "$root/codin.out"; then
+              echo "Codin differential fuzz variant $variant: PASS"
+            else
+              echo "Codin differential fuzz variant $variant: FAIL (informational competitor result)"
+            fi
+          done
+
       - name: Parse the same fixture with modern Thor
         shell: bash
         run: |
