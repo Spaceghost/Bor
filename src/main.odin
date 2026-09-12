@@ -70,6 +70,7 @@ main :: proc() {
 		defer mir_destroy(&m)
 		if !lowered do os.exit(1)
 		apply_mir_linkage(pkg, &m)
+		if !mir_verify(&m) do os.exit(1)
 		generated, emitted = emit_mir_c99(&m)
 	} else {
 		generated, emitted = emit_c99(pkg)
