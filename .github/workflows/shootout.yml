@@ -1,0 +1,67 @@
+name: Bor language shootout
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  ODIN_VERSION: dev-2026-09
+  ODIN_SHA256: 167c3e1d7056419dad2e04bb3bd98715b7ff286d4c125f3c5a5ee337c6254283
+  CODIN_SHA: 5cd28a63023c24079f16e9a51a0140501cebdfa2
+  THOR_SHA: 5e7a2fa67063ca71d7efabb90fbde66a8c91d2fe
+
+jobs:
+  shootout:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned Odin
+        shell: bash
+        run: |
+          set -euxo pipefail
+          curl -fsSL "https://github.com/odin-lang/Odin/releases/download/${ODIN_VERSION}/odin-linux-amd64-${ODIN_VERSION}.tar.gz" -o "$RUNNER_TEMP/odin.tar.gz"
+          echo "${ODIN_SHA256}  $RUNNER_TEMP/odin.tar.gz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/odin"
+          tar -xzf "$RUNNER_TEMP/odin.tar.gz" -C "$RUNNER_TEMP/odin" --strip-components=1
+          echo "$RUNNER_TEMP/odin" >> "$GITHUB_PATH"
+
+      - name: Build Bor and prove both strict C99 backends
+        run: make test
+
+      - name: Build Codin oracle
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git clone https://github.com/Spaceghost/codin.git "$RUNNER_TEMP/codin"
+          git -C "$RUNNER_TEMP/codin" checkout "$CODIN_SHA"
+          make -C "$RUNNER_TEMP/codin" -j2
+          "$RUNNER_TEMP/codin/codin" emit-c "$GITHUB_WORKSPACE/test/melodica" -o "$RUNNER_TEMP/codin.c"
+          gcc -std=c99 -pedantic-errors -Wall -Wextra -Werror -O3 "$RUNNER_TEMP/codin.c" test/c99/smoke.c -o "$RUNNER_TEMP/codin-smoke"
+          "$RUNNER_TEMP/codin-smoke"
+
+      - name: Parse the same fixture with modern Thor
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git clone https://github.com/Spaceghost/Thor.git "$RUNNER_TEMP/thor"
+          git -C "$RUNNER_TEMP/thor" checkout "$THOR_SHA"
+          make -C "$RUNNER_TEMP/thor" -j2 DEBUG=1
+          "$RUNNER_TEMP/thor/thor" test/melodica/main.odin > "$RUNNER_TEMP/thor.ast"
+          test -s "$RUNNER_TEMP/thor.ast"
+
+      - name: Shootout report
+        shell: bash
+        run: |
+          set -euxo pipefail
+          echo '=== generated C bytes ==='
+          wc -c build/direct-melodica.c build/mir-melodica.c "$RUNNER_TEMP/codin.c"
+          echo '=== GCC executable sections ==='
+          size build/smoke-direct-gcc build/smoke-mir-gcc "$RUNNER_TEMP/codin-smoke"
+          echo '=== Clang executable sections ==='
+          size build/smoke-direct-clang build/smoke-mir-clang
