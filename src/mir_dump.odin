@@ -149,8 +149,15 @@ mir_dump_inst :: proc(b: ^strings.Builder, m: ^MIR_Module, op: ^MIR_Inst) {
 	case .Jump:
 		strings.write_string(b, "jump b")
 		mir_dump_int(b, int(op.target))
+	case .Branch:
+		strings.write_string(b, "branch ")
+		mir_dump_value_ref(b, m, op.a)
+		strings.write_string(b, ", b")
+		mir_dump_int(b, int(op.target))
+		strings.write_string(b, ", b")
+		mir_dump_int(b, int(op.target_else))
 	case .Jump_If_False:
-		strings.write_string(b, "jump_false ")
+		strings.write_string(b, "raw_jump_false ")
 		mir_dump_value_ref(b, m, op.a)
 		strings.write_string(b, ", b")
 		mir_dump_int(b, int(op.target))
