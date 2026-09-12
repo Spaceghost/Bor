@@ -93,6 +93,7 @@ jobs:
         shell: bash
         run: |
           python3 - <<'PY'
+          import os
           import statistics
           import subprocess
           import tempfile
@@ -100,11 +101,12 @@ jobs:
           from pathlib import Path
 
           root = Path.cwd()
+          runner_temp = Path(os.environ["RUNNER_TEMP"])
           tmp = Path(tempfile.mkdtemp(prefix="bor-shootout-"))
           cases = [
               ("bor-direct", [str(root / "build/bor"), "emit-c-direct", str(root / "test/melodica"), "-o", str(tmp / "bor-direct.c")]),
               ("bor-mir", [str(root / "build/bor"), "emit-c-mir", str(root / "test/melodica"), "-o", str(tmp / "bor-mir.c")]),
-              ("codin", [str(Path("$RUNNER_TEMP") / "codin/codin"), "emit-c", str(root / "test/melodica"), "-o", str(tmp / "codin.c")]),
+              ("codin", [str(runner_temp / "codin/codin"), "emit-c", str(root / "test/melodica"), "-o", str(tmp / "codin.c")]),
           ]
 
           for label, command in cases:
@@ -113,7 +115,7 @@ jobs:
                   start = time.perf_counter_ns()
                   subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                   samples.append((time.perf_counter_ns() - start) / 1_000_000)
-              samples = samples[1:]  # discard cold first invocation
+              samples = samples[1:]
               p50 = statistics.median(samples)
               p95 = sorted(samples)[int(len(samples) * 0.95) - 1]
               print(f"{label:12s} p50={p50:8.3f} ms  p95={p95:8.3f} ms  n={len(samples)}")
