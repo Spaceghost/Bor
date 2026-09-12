@@ -1,47 +1,11 @@
 package main
 
 import "core:fmt"
-import "core:odin/ast"
 import "core:odin/parser"
 import "core:os"
 
 usage :: proc() {
 	fmt.eprintln("usage: bor <emit-c|emit-c-direct|emit-c-mir|dump-mir> <odin-package-directory> -o <output>")
-}
-
-decl_is_exported :: proc(d: ^ast.Value_Decl) -> bool {
-	if d == nil do return false
-	for attribute in d.attributes {
-		if attribute == nil do continue
-		for elem in attribute.elems {
-			if ident, ok := elem.derived.(^ast.Ident); ok && ident.name == "export" {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// Linkage is declaration metadata, not a calling convention. Keep that fact
-// explicit at the MIR boundary even while the bootstrap lowerer still carries
-// a provisional `external` bit of its own.
-apply_mir_linkage :: proc(pkg: ^ast.Package, m: ^MIR_Module) {
-	for _, file in pkg.files {
-		for stmt in file.decls {
-			d, is_decl := stmt.derived.(^ast.Value_Decl)
-			if !is_decl || len(d.names) != 1 || len(d.values) != 1 do continue
-			name_expr, named := d.names[0].derived.(^ast.Ident)
-			if !named do continue
-			if _, is_proc := d.values[0].derived.(^ast.Proc_Lit); !is_proc do continue
-
-			for &p in m.procedures {
-				if p.name == name_expr.name {
-					p.external = decl_is_exported(d)
-					break
-				}
-			}
-		}
-	}
 }
 
 main :: proc() {
@@ -69,7 +33,7 @@ main :: proc() {
 		m, lowered := lower_package_to_mir(pkg)
 		defer mir_destroy(&m)
 		if !lowered do os.exit(1)
-		apply_mir_linkage(pkg, &m)
+		normalize_mir_semantics(pkg, &m)
 		if !mir_verify(&m) do os.exit(1)
 		if command == "dump-mir" {
 			generated = mir_dump(&m)
