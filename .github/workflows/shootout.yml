@@ -31,7 +31,7 @@ jobs:
           tar -xzf "$RUNNER_TEMP/odin.tar.gz" -C "$RUNNER_TEMP/odin" --strip-components=1
           echo "$RUNNER_TEMP/odin" >> "$GITHUB_PATH"
 
-      - name: Build Bor and prove strict C99 behavior
+      - name: Build Bor and prove both strict C99 backends
         run: make test
 
       - name: Build Codin oracle
@@ -55,9 +55,13 @@ jobs:
           "$RUNNER_TEMP/thor/thor" test/melodica/main.odin > "$RUNNER_TEMP/thor.ast"
           test -s "$RUNNER_TEMP/thor.ast"
 
-      - name: Report generated artifact sizes
+      - name: Shootout report
         shell: bash
         run: |
           set -euxo pipefail
-          wc -c build/bor-melodica.c "$RUNNER_TEMP/codin.c"
-          size build/smoke-gcc build/smoke-clang "$RUNNER_TEMP/codin-smoke"
+          echo '=== generated C bytes ==='
+          wc -c build/direct-melodica.c build/mir-melodica.c "$RUNNER_TEMP/codin.c"
+          echo '=== GCC executable sections ==='
+          size build/smoke-direct-gcc build/smoke-mir-gcc "$RUNNER_TEMP/codin-smoke"
+          echo '=== Clang executable sections ==='
+          size build/smoke-direct-clang build/smoke-mir-clang
