@@ -1,0 +1,72 @@
+name: Import verified checked-IR source
+on:
+  push:
+    branches: ['borr/checked-ir']
+    paths: ['.bootstrap/**', '.github/workflows/import-checked-ir.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  import-and-verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify and extract source transport
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .bootstrap/part-00 .bootstrap/part-01 .bootstrap/part-02 > "$RUNNER_TEMP/checked-ir.tar.xz"
+          echo "24d114f7e318f13ed551672f2f2486d799b4a4136633dec0cc8400a886e64ca4  $RUNNER_TEMP/checked-ir.tar.xz" | sha256sum -c -
+          python3 - <<'PY'
+          import os, pathlib, tarfile
+          allowed = {'src', 'tools', 'tests', 'docs', 'licenses', '.gitignore', 'README.md', 'LICENSE', 'Makefile'}
+          with tarfile.open(pathlib.Path(os.environ['RUNNER_TEMP'])/'checked-ir.tar.xz') as archive:
+              members = archive.getmembers()
+              assert len(members) == 26 and len({m.name for m in members}) == 26
+              for member in members:
+                  p = pathlib.PurePosixPath(member.name)
+                  assert member.isfile() and not p.is_absolute() and '..' not in p.parts
+                  assert p.parts[0] in allowed and member.size < 100000
+              archive.extractall('.', members=members, filter='data')
+          PY
+      - name: Publish ordinary reviewable source files
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- src tools tests docs licenses .gitignore README.md LICENSE Makefile
+          git diff --cached --quiet || git commit -m 'feat: introduce checked Odin IR, interpreter, C99 backend and differential shootout'
+          git push origin HEAD:refs/heads/borr/checked-ir
+      - name: Install checksum-verified Odin and Zig
+        shell: bash
+        run: |
+          sh tools/setup-toolchains.sh "$RUNNER_TEMP/borr-toolchains"
+          echo "$RUNNER_TEMP/borr-toolchains/odin" >> "$GITHUB_PATH"
+          echo "$RUNNER_TEMP/borr-toolchains/zig" >> "$GITHUB_PATH"
+      - name: IR and differential correctness gates
+        run: make test
+      - name: Freestanding cross-object gates
+        run: make cross
+      - name: Pinned reference implementations
+        run: make references
+      - name: Interleaved competitive shootout
+        run: make shootout ROUNDS=7
+      - name: Retain evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: checked-ir-import-evidence
+          path: build/
+          retention-days: 14
+      - name: Retain portable Zig toolchain for local reproduction
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zig-0.16.0-linux-amd64
+          path: ${{ runner.temp }}/borr-toolchains/zig.tar.xz
+          retention-days: 3
+          compression-level: 0
