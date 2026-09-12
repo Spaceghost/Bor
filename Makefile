@@ -5,9 +5,10 @@ BUILD := build
 BOR := $(BUILD)/bor
 DIRECT_C := $(BUILD)/direct-melodica.c
 MIR_C := $(BUILD)/mir-melodica.c
+MIR_DUMP := $(BUILD)/melodica.mir
 CFLAGS_STRICT := -std=c99 -pedantic-errors -Wall -Wextra -Werror -O3
 
-.PHONY: all bor emit test bench clean
+.PHONY: all bor emit dump test bench clean
 
 all: test
 
@@ -21,11 +22,16 @@ $(BOR): src/*.odin | $(BUILD)
 
 emit: $(DIRECT_C) $(MIR_C)
 
+dump: $(MIR_DUMP)
+
 $(DIRECT_C): $(BOR) test/melodica/main.odin
 	$(BOR) emit-c-direct test/melodica -o $@
 
 $(MIR_C): $(BOR) test/melodica/main.odin
 	$(BOR) emit-c-mir test/melodica -o $@
+
+$(MIR_DUMP): $(BOR) test/melodica/main.odin
+	$(BOR) dump-mir test/melodica -o $@
 
 $(BUILD)/smoke-direct-gcc: $(DIRECT_C) test/c99/smoke.c
 	$(CC) $(CFLAGS_STRICT) $(DIRECT_C) test/c99/smoke.c -o $@
@@ -45,13 +51,17 @@ $(BUILD)/native-melodica.a: test/melodica/main.odin | $(BUILD)
 $(BUILD)/smoke-native: $(BUILD)/native-melodica.a test/c99/smoke.c
 	$(CC) -std=c11 -Wall -Wextra -Werror -O2 test/c99/smoke.c $(BUILD)/native-melodica.a -lm -ldl -lpthread -o $@
 
-test: $(BUILD)/smoke-direct-gcc $(BUILD)/smoke-direct-clang $(BUILD)/smoke-mir-gcc $(BUILD)/smoke-mir-clang $(BUILD)/smoke-native
+test: $(BUILD)/smoke-direct-gcc $(BUILD)/smoke-direct-clang $(BUILD)/smoke-mir-gcc $(BUILD)/smoke-mir-clang $(BUILD)/smoke-native $(MIR_DUMP)
 	./$(BUILD)/smoke-direct-gcc
 	./$(BUILD)/smoke-direct-clang
 	./$(BUILD)/smoke-mir-gcc
 	./$(BUILD)/smoke-mir-clang
 	./$(BUILD)/smoke-native
-	@echo 'Bor: direct C99, flat MIR C99, and native Odin behavior agree'
+	test -s $(MIR_DUMP)
+	grep -q 'jump_if_false' $(MIR_DUMP)
+	grep -q 'binary' $(MIR_DUMP)
+	grep -q 'return' $(MIR_DUMP)
+	@echo 'Bor: direct C99, flat MIR C99, MIR dump, and native Odin behavior agree'
 
 $(BUILD)/bench-direct-gcc: $(DIRECT_C) test/c99/bench.c
 	$(CC) $(CFLAGS_STRICT) $(DIRECT_C) test/c99/bench.c -o $@
