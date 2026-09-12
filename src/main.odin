@@ -22,10 +22,10 @@ decl_is_exported :: proc(d: ^ast.Value_Decl) -> bool {
 	return false
 }
 
-// Bootstrap compatibility bridge: both current backends still encode linkage
-// beside calling-convention data. Only @(export) declarations are rewritten.
-// The MIR will own linkage as an independent property once the shootout settles.
-normalize_export_linkage :: proc(pkg: ^ast.Package) {
+// The direct AST backend is intentionally retained as a small shootout control.
+// It still uses procedure linkage encoded alongside its old call-convention
+// handling, so only that lane receives this compatibility normalization.
+normalize_direct_export_linkage :: proc(pkg: ^ast.Package) {
 	for _, file in pkg.files {
 		for stmt in file.decls {
 			d, is_decl := stmt.derived.(^ast.Value_Decl)
@@ -33,6 +33,28 @@ normalize_export_linkage :: proc(pkg: ^ast.Package) {
 			p, is_proc := d.values[0].derived.(^ast.Proc_Lit)
 			if !is_proc || p.type == nil do continue
 			p.type.calling_convention = "c"
+		}
+	}
+}
+
+// MIR owns linkage as a separate semantic bit. Reset the bootstrap call-
+// convention guess and derive external visibility solely from @(export).
+apply_mir_export_linkage :: proc(m: ^MIR_Module, pkg: ^ast.Package) {
+	for &p in m.procedures do p.external = false
+
+	for _, file in pkg.files {
+		for stmt in file.decls {
+			d, is_decl := stmt.derived.(^ast.Value_Decl)
+			if !is_decl || !decl_is_exported(d) || len(d.names) != 1 || len(d.values) != 1 do continue
+			if _, is_proc := d.values[0].derived.(^ast.Proc_Lit); !is_proc do continue
+			name, named := mir_ident_name(d.names[0])
+			if !named do continue
+			for &p in m.procedures {
+				if p.name == name {
+					p.external = true
+					break
+				}
+			}
 		}
 	}
 }
@@ -54,7 +76,6 @@ main :: proc() {
 		fmt.eprintfln("bor: failed to parse %s with core:odin/parser", os.args[2])
 		os.exit(1)
 	}
-	normalize_export_linkage(pkg)
 
 	generated: string
 	emitted := false
@@ -63,8 +84,10 @@ main :: proc() {
 		m, lowered := lower_package_to_mir(pkg)
 		defer mir_destroy(&m)
 		if !lowered do os.exit(1)
+		apply_mir_export_linkage(&m, pkg)
 		generated, emitted = emit_mir_c99(&m)
 	} else {
+		normalize_direct_export_linkage(pkg)
 		generated, emitted = emit_c99(pkg)
 	}
 
