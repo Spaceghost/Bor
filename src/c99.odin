@@ -20,6 +20,7 @@ Emitter :: struct {
 	depth:        int,
 	locals:       map[string]C_Type,
 	proc_results: map[string]C_Type,
+	proc_exports: map[string]bool,
 	failed:       bool,
 }
 
@@ -103,16 +104,6 @@ proc_result_type :: proc(p: ^ast.Proc_Lit) -> C_Type {
 		return .Unknown
 	}
 	return ast_type(p.type.results.list[0].type)
-}
-
-proc_is_c :: proc(p: ^ast.Proc_Lit) -> bool {
-	if p == nil || p.type == nil {
-		return false
-	}
-	if cc, matched := p.type.calling_convention.(string); matched {
-		return cc == "c"
-	}
-	return false
 }
 
 infer_type :: proc(e: ^Emitter, expr: ^ast.Expr) -> C_Type {
@@ -462,7 +453,7 @@ emit_proc_head :: proc(e: ^Emitter, name: string, p: ^ast.Proc_Lit, prototype: b
 	if !known_result {
 		return fail(e, "procedure result type for %s", name)
 	}
-	if !proc_is_c(p) {
+	if !e.proc_exports[name] {
 		write(e, "static ")
 	}
 	write(e, ct)
@@ -485,6 +476,7 @@ collect_globals :: proc(e: ^Emitter, pkg: ^ast.Package) {
 			if !named do continue
 			if p, is_proc := d.values[0].derived.(^ast.Proc_Lit); is_proc {
 				e.proc_results[name] = proc_result_type(p)
+				e.proc_exports[name] = decl_is_exported(d)
 			}
 		}
 	}
@@ -547,10 +539,12 @@ emit_c99 :: proc(pkg: ^ast.Package) -> (string, bool) {
 	e := Emitter{
 		locals       = make(map[string]C_Type),
 		proc_results = make(map[string]C_Type),
+		proc_exports = make(map[string]bool),
 	}
 	strings.builder_init(&e.out)
 	defer delete(e.locals)
 	defer delete(e.proc_results)
+	defer delete(e.proc_exports)
 
 	collect_globals(&e, pkg)
 
