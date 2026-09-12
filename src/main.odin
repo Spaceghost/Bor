@@ -22,16 +22,24 @@ decl_is_exported :: proc(d: ^ast.Value_Decl) -> bool {
 	return false
 }
 
-// Temporary MIR-only compatibility bridge. The direct backend owns linkage
-// directly now; the MIR path will follow in the next shootout step.
-normalize_mir_export_linkage :: proc(pkg: ^ast.Package) {
+// Linkage is declaration metadata, not a calling convention. Keep that fact
+// explicit at the MIR boundary even while the bootstrap lowerer still carries
+// a provisional `external` bit of its own.
+apply_mir_linkage :: proc(pkg: ^ast.Package, m: ^MIR_Module) {
 	for _, file in pkg.files {
 		for stmt in file.decls {
 			d, is_decl := stmt.derived.(^ast.Value_Decl)
-			if !is_decl || !decl_is_exported(d) || len(d.values) != 1 do continue
-			p, is_proc := d.values[0].derived.(^ast.Proc_Lit)
-			if !is_proc || p.type == nil do continue
-			p.type.calling_convention = "c"
+			if !is_decl || len(d.names) != 1 || len(d.values) != 1 do continue
+			name_expr, named := d.names[0].derived.(^ast.Ident)
+			if !named do continue
+			if _, is_proc := d.values[0].derived.(^ast.Proc_Lit); !is_proc do continue
+
+			for &p in m.procedures {
+				if p.name == name_expr.name {
+					p.external = decl_is_exported(d)
+					break
+				}
+			}
 		}
 	}
 }
@@ -58,10 +66,10 @@ main :: proc() {
 	emitted := false
 
 	if command == "emit-c-mir" {
-		normalize_mir_export_linkage(pkg)
 		m, lowered := lower_package_to_mir(pkg)
 		defer mir_destroy(&m)
 		if !lowered do os.exit(1)
+		apply_mir_linkage(pkg, &m)
 		generated, emitted = emit_mir_c99(&m)
 	} else {
 		generated, emitted = emit_c99(pkg)
