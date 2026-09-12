@@ -1,0 +1,5 @@
+/build/
+/evidence/
+/bor
+*.o
+__pycache__/
