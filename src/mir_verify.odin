@@ -111,6 +111,22 @@ mir_verify :: proc(m: ^MIR_Module) -> bool {
 			if !b.terminated {
 				return mir_verify_fail("proc %d (%s) block %d is not terminated", pi, p.name, bi)
 			}
+
+			last_index := int(b.first_op + b.op_count - 1)
+			last := &m.ops[last_index]
+			if last.kind == .Jump_If_False {
+				return mir_verify_fail("proc %d (%s) block %d still has raw fallthrough conditional", pi, p.name, bi)
+			}
+			if last.kind != .Jump && last.kind != .Branch && last.kind != .Return {
+				return mir_verify_fail("proc %d (%s) block %d has no canonical terminator", pi, p.name, bi)
+			}
+
+			for oi in int(b.first_op)..<last_index {
+				kind := m.ops[oi].kind
+				if kind == .Jump || kind == .Branch || kind == .Jump_If_False || kind == .Return {
+					return mir_verify_fail("proc %d (%s) block %d has early terminator at op %d", pi, p.name, bi, oi)
+				}
+			}
 		}
 
 		for oi in int(p.first_op)..<int(p.first_op + p.op_count) {
@@ -145,10 +161,15 @@ mir_verify :: proc(m: ^MIR_Module) -> bool {
 			case .Jump:
 				if !mir_block_in_proc(&p, op.target) do return mir_verify_fail("proc %d op %d jumps to foreign block", pi, oi)
 				incoming[int(op.target)] += 1
-			case .Jump_If_False:
+			case .Branch:
 				if !mir_require_value(m, op.a, pi, oi, "condition") do return false
-				if !mir_block_in_proc(&p, op.target) do return mir_verify_fail("proc %d op %d conditionally jumps to foreign block", pi, oi)
+				if m.values[int(op.a)].type != .Bool do return mir_verify_fail("proc %d op %d branch condition is not bool", pi, oi)
+				if !mir_block_in_proc(&p, op.target) do return mir_verify_fail("proc %d op %d true edge targets foreign block", pi, oi)
+				if !mir_block_in_proc(&p, op.target_else) do return mir_verify_fail("proc %d op %d false edge targets foreign block", pi, oi)
 				incoming[int(op.target)] += 1
+				incoming[int(op.target_else)] += 1
+			case .Jump_If_False:
+				return mir_verify_fail("proc %d op %d raw fallthrough conditional survived normalization", pi, oi)
 			case .Return:
 				if op.a != INVALID_VALUE && !mir_require_value(m, op.a, pi, oi, "return") do return false
 			}
