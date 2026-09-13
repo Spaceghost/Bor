@@ -1,0 +1,164 @@
+name: Real Odin completeness corpus
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bor-completeness-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ODIN_VERSION: dev-2026-09
+  ODIN_SHA256: 167c3e1d7056419dad2e04bb3bd98715b7ff286d4c125f3c5a5ee337c6254283
+  ODIN_EXAMPLES_SHA: f1aba9aa1f4ab64c874b0944344a5cd3257f1a54
+  ROSETTA_SHA: 4f4f759a78eebfcfdb65e4a7e2f8c33a6e40092d
+
+jobs:
+  corpus:
+    # Trusted push/workflow-dispatch only. Keep public PR code off private runners.
+    runs-on: [self-hosted, linux, x64]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Odin
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 "https://github.com/odin-lang/Odin/releases/download/${ODIN_VERSION}/odin-linux-amd64-${ODIN_VERSION}.tar.gz" -o "$RUNNER_TEMP/odin.tar.gz"
+          echo "$ODIN_SHA256  $RUNNER_TEMP/odin.tar.gz" | sha256sum -c -
+          rm -rf "$RUNNER_TEMP/odin"
+          mkdir -p "$RUNNER_TEMP/odin"
+          tar -xzf "$RUNNER_TEMP/odin.tar.gz" -C "$RUNNER_TEMP/odin" --strip-components=1
+          echo "$RUNNER_TEMP/odin" >> "$GITHUB_PATH"
+
+      - name: Build Bor and competitors from canonical master
+        shell: bash
+        run: |
+          set -euxo pipefail
+          odin build src -out:build/bor -o:speed
+          git clone --depth 1 --branch master https://github.com/Spaceghost/codin.git "$RUNNER_TEMP/codin"
+          make -C "$RUNNER_TEMP/codin" -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)"
+          git clone --depth 1 --branch master https://github.com/Spaceghost/Thor.git "$RUNNER_TEMP/thor"
+          make -C "$RUNNER_TEMP/thor" -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)" DEBUG=1
+
+      - name: Fetch pinned real-world corpora
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git clone https://github.com/odin-lang/examples.git "$RUNNER_TEMP/odin-examples"
+          git -C "$RUNNER_TEMP/odin-examples" checkout --detach "$ODIN_EXAMPLES_SHA"
+          git clone https://github.com/eterps/odin_rosettacode.git "$RUNNER_TEMP/rosetta"
+          git -C "$RUNNER_TEMP/rosetta" checkout --detach "$ROSETTA_SHA"
+
+      - name: Score real Odin programs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/completeness/logs build/completeness/tmp
+          report=build/completeness/report.tsv
+          printf 'program\tnative\tbor\tcodin\tthor\tbor_reason\n' > "$report"
+
+          score_dir() {
+            label=$1
+            src=$2
+            tmp="build/completeness/tmp/${label}"
+            rm -rf "$tmp"
+            mkdir -p "$tmp"
+            cp -R "$src"/. "$tmp"/
+
+            native=FAIL; bor=FAIL; codin=FAIL; thor=FAIL; reason=''
+            if odin check "$tmp" >"build/completeness/logs/${label}.native.out" 2>"build/completeness/logs/${label}.native.err"; then
+              native=PASS
+            fi
+            if build/bor emit-c "$tmp" -o "build/completeness/${label}.bor.c" >"build/completeness/logs/${label}.bor.out" 2>"build/completeness/logs/${label}.bor.err"; then
+              bor=PASS
+            else
+              reason=$(head -n 1 "build/completeness/logs/${label}.bor.err" | tr '\t' ' ' | tr '\n' ' ')
+            fi
+            if "$RUNNER_TEMP/codin/codin" emit-c "$tmp" -o "build/completeness/${label}.codin.c" >"build/completeness/logs/${label}.codin.out" 2>"build/completeness/logs/${label}.codin.err"; then
+              codin=PASS
+            fi
+            first=$(find "$tmp" -maxdepth 1 -name '*.odin' -type f | sort | head -n 1)
+            if test -n "$first" && "$RUNNER_TEMP/thor/thor" "$first" >"build/completeness/logs/${label}.thor.out" 2>"build/completeness/logs/${label}.thor.err"; then
+              thor=PASS
+            fi
+            printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$label" "$native" "$bor" "$codin" "$thor" "$reason" >> "$report"
+          }
+
+          score_file() {
+            label=$1
+            src=$2
+            tmp="build/completeness/tmp/${label}"
+            rm -rf "$tmp"
+            mkdir -p "$tmp"
+            cp "$src" "$tmp/main.odin"
+
+            native=FAIL; bor=FAIL; codin=FAIL; thor=FAIL; reason=''
+            if odin check "$tmp" >"build/completeness/logs/${label}.native.out" 2>"build/completeness/logs/${label}.native.err"; then
+              native=PASS
+            fi
+            if build/bor emit-c "$tmp" -o "build/completeness/${label}.bor.c" >"build/completeness/logs/${label}.bor.out" 2>"build/completeness/logs/${label}.bor.err"; then
+              bor=PASS
+            else
+              reason=$(head -n 1 "build/completeness/logs/${label}.bor.err" | tr '\t' ' ' | tr '\n' ' ')
+            fi
+            if "$RUNNER_TEMP/codin/codin" emit-c "$tmp" -o "build/completeness/${label}.codin.c" >"build/completeness/logs/${label}.codin.out" 2>"build/completeness/logs/${label}.codin.err"; then
+              codin=PASS
+            fi
+            if "$RUNNER_TEMP/thor/thor" "$tmp/main.odin" >"build/completeness/logs/${label}.thor.out" 2>"build/completeness/logs/${label}.thor.err"; then
+              thor=PASS
+            fi
+            printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$label" "$native" "$bor" "$codin" "$thor" "$reason" >> "$report"
+          }
+
+          # Maintained official examples: larger package-shaped coverage.
+          score_dir official-absolute-beginners "$RUNNER_TEMP/odin-examples/absolute_beginners"
+          score_dir official-command-line "$RUNNER_TEMP/odin-examples/command_line_arguments"
+          score_dir official-arena-allocator "$RUNNER_TEMP/odin-examples/arena_allocator"
+          score_dir official-code-generation "$RUNNER_TEMP/odin-examples/code_generation"
+
+          # Small real programs isolate language gaps cleanly.
+          score_file rosetta-factorial "$RUNNER_TEMP/rosetta/src/Factorial.odin"
+          score_file rosetta-enums "$RUNNER_TEMP/rosetta/src/Enumerations.odin"
+          score_file rosetta-higher-order "$RUNNER_TEMP/rosetta/src/Higher-order_functions.odin"
+          score_file rosetta-search-list "$RUNNER_TEMP/rosetta/src/Search_a_list.odin"
+          score_file rosetta-sum-type "$RUNNER_TEMP/rosetta/src/Sum_data_type.odin"
+          score_file rosetta-linked-list "$RUNNER_TEMP/rosetta/src/Singly-linked_list__Traversal.odin"
+
+          column -t -s $'\t' "$report" || cat "$report"
+
+          python3 - <<'PY'
+          import csv, json
+          from pathlib import Path
+          rows = list(csv.DictReader(Path('build/completeness/report.tsv').open(), delimiter='\t'))
+          live = [r for r in rows if r['native'] == 'PASS']
+          scores = {k: sum(r[k] == 'PASS' for r in live) for k in ('bor', 'codin', 'thor')}
+          reasons = {}
+          for r in live:
+              if r['bor'] != 'PASS':
+                  reasons[r['bor_reason'] or '<no diagnostic>'] = reasons.get(r['bor_reason'] or '<no diagnostic>', 0) + 1
+          out = {'native_programs': len(live), 'scores': scores, 'bor_failure_reasons': reasons, 'rows': rows}
+          Path('build/completeness/report.json').write_text(json.dumps(out, indent=2) + '\n')
+          print(json.dumps(out, indent=2))
+          PY
+
+      - name: Upload completeness evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bor-real-odin-corpus-${{ github.run_id }}
+          retention-days: 14
+          if-no-files-found: error
+          path: |
+            build/completeness/report.tsv
+            build/completeness/report.json
+            build/completeness/logs/
+            build/completeness/*.c
