@@ -21,9 +21,9 @@ decl_is_exported :: proc(d: ^ast.Value_Decl) -> bool {
 	return false
 }
 
-// The direct AST backend is intentionally retained as a small shootout control.
-// It predates explicit linkage in Bor's semantic model, so only that lane gets
-// this compatibility normalization.
+// The direct AST backend is intentionally retained as a first-class shootout
+// lane. It predates explicit linkage in Bor's semantic model, so only that lane
+// gets this compatibility normalization.
 normalize_direct_export_linkage :: proc(pkg: ^ast.Package) {
 	for _, file in pkg.files {
 		for stmt in file.decls {
@@ -86,9 +86,9 @@ main :: proc() {
 	generated: string
 	emitted := false
 
-	// MIR won the first correctness/size/runtime shootout and is the product
-	// default. The direct lane remains an always-on control.
-	if command == "emit-c" || command == "emit-c-mir" || command == "dump-mir" {
+	// Product default follows the current shootout winner. The MIR lane remains
+	// first-class and can reclaim the default whenever repeatable evidence says so.
+	if command == "emit-c-mir" || command == "dump-mir" {
 		m, lowered := lower_package_to_mir(pkg)
 		defer mir_destroy(&m)
 		if !lowered do os.exit(1)
@@ -101,6 +101,7 @@ main :: proc() {
 			generated, emitted = emit_mir_c99(&m)
 		}
 	} else {
+		// emit-c and emit-c-direct currently select the direct AST lane.
 		normalize_direct_export_linkage(pkg)
 		generated, emitted = emit_c99(pkg)
 	}
