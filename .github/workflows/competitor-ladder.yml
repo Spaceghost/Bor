@@ -1,0 +1,99 @@
+name: Compiler competitor completeness ladder
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CODIN_REPO: https://github.com/Spaceghost/codin.git
+  THOR_REPO: https://github.com/Spaceghost/Thor.git
+
+jobs:
+  competitors:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Codin best strict-C99 path from canonical master
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git clone --depth 1 --branch master "$CODIN_REPO" "$RUNNER_TEMP/codin"
+          make -C "$RUNNER_TEMP/codin" -j2
+          "$RUNNER_TEMP/codin/scripts/build-experimental-c99.sh"
+
+      - name: Build Thor parser from canonical master
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git clone --depth 1 --branch master "$THOR_REPO" "$RUNNER_TEMP/thor"
+          make -C "$RUNNER_TEMP/thor" -j2 DEBUG=1
+
+      - name: Score all nine shared fixtures
+        shell: bash
+        run: |
+          set -u
+          features='structs arrays enums slices_strings multiple_returns defers unions imports generics'
+          mkdir -p build/competitors
+          printf 'feature\tcodin_c99\tthor_parse\tcodin_reason\tthor_reason\n' > build/competitors/report.tsv
+          for feature in $features; do
+            codin=FAIL; thor=FAIL; codin_reason=''; thor_reason=''
+            if "$RUNNER_TEMP/codin/codin" emit-c "$GITHUB_WORKSPACE/test/features/$feature" -o "build/competitors/$feature.codin.c" >"build/competitors/$feature.codin.out" 2>"build/competitors/$feature.codin.err" \
+               && gcc -std=c99 -pedantic-errors -Wall -Wextra -Werror -O3 -c "build/competitors/$feature.codin.c" -o "build/competitors/$feature.codin.o" >>"build/competitors/$feature.codin.out" 2>>"build/competitors/$feature.codin.err"; then
+              codin=PASS
+            else
+              codin_reason=$(head -n 1 "build/competitors/$feature.codin.err" | tr '\t\n' '  ')
+            fi
+            first=$(find "test/features/$feature" -maxdepth 1 -name '*.odin' -type f | sort | head -n 1)
+            if test -n "$first" && "$RUNNER_TEMP/thor/thor" "$first" >"build/competitors/$feature.thor.out" 2>"build/competitors/$feature.thor.err"; then
+              thor=PASS
+            else
+              thor_reason=$(head -n 1 "build/competitors/$feature.thor.err" | tr '\t\n' '  ')
+            fi
+            printf '%s\t%s\t%s\t%s\t%s\n' "$feature" "$codin" "$thor" "$codin_reason" "$thor_reason" >> build/competitors/report.tsv
+          done
+          column -t -s $'\t' build/competitors/report.tsv || cat build/competitors/report.tsv
+          python3 - <<'PY'
+          import csv, json
+          from pathlib import Path
+          rows = list(csv.DictReader(Path('build/competitors/report.tsv').open(), delimiter='\t'))
+          data = {
+              'scores': {
+                  'codin_c99': sum(r['codin_c99'] == 'PASS' for r in rows),
+                  'thor_parse': sum(r['thor_parse'] == 'PASS' for r in rows),
+              },
+              'rows': rows,
+          }
+          Path('build/competitors/report.json').write_text(json.dumps(data, indent=2) + '\n')
+          print(json.dumps(data, indent=2))
+          PY
+
+      - name: Prove Codin shared-fixture behavior
+        shell: bash
+        run: |
+          set -euxo pipefail
+          units=()
+          for feature in structs arrays enums slices_strings multiple_returns defers unions imports generics; do
+            c="build/competitors/$feature.codin.c"
+            test -s "$c"
+            clang -std=c99 -pedantic-errors -Wall -Wextra -Werror -O3 -c "$c" -o "$RUNNER_TEMP/$feature.codin-clang.o"
+            units+=("$c")
+          done
+          gcc -std=c99 -pedantic-errors -Wall -Wextra -Werror -O3 test/features/full_smoke.c "${units[@]}" -o "$RUNNER_TEMP/codin-full-gcc"
+          clang -std=c99 -pedantic-errors -Wall -Wextra -Werror -O3 test/features/full_smoke.c "${units[@]}" -o "$RUNNER_TEMP/codin-full-clang"
+          "$RUNNER_TEMP/codin-full-gcc"
+          "$RUNNER_TEMP/codin-full-clang"
+
+      - name: Upload competitor evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compiler-competitor-ladder-${{ github.run_id }}
+          retention-days: 14
+          if-no-files-found: warn
+          path: build/competitors/
