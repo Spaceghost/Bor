@@ -1,6 +1,6 @@
 package generics
 
-identity :: proc(value: $T) -> T {
+identity :: proc "contextless" (value: $T) -> T {
 	return value
 }
 
