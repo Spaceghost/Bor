@@ -23,6 +23,13 @@ Array_Local :: struct {
 	count: ^ast.Expr,
 }
 
+MAX_MULTI_RESULTS :: 8
+
+Multi_Result :: struct {
+	count: int,
+	types: [MAX_MULTI_RESULTS]C_Type,
+}
+
 Emitter :: struct {
 	out:           strings.Builder,
 	depth:         int,
@@ -33,6 +40,10 @@ Emitter :: struct {
 	enum_backing:  map[string]C_Type,
 	proc_results:  map[string]C_Type,
 	proc_exports:  map[string]bool,
+	multi_results: map[string]Multi_Result,
+	current_proc:  string,
+	defers:        [dynamic]^ast.Stmt,
+	multi_temp_counter: u32,
 	failed:        bool,
 }
 
@@ -149,6 +160,76 @@ proc_result_type :: proc(e: ^Emitter, p: ^ast.Proc_Lit) -> C_Type {
 		return .Unknown
 	}
 	return resolved_type(e, p.type.results.list[0].type)
+}
+
+multi_field_name :: proc(index: int) -> string {
+	switch index {
+	case 0: return "_0"
+	case 1: return "_1"
+	case 2: return "_2"
+	case 3: return "_3"
+	case 4: return "_4"
+	case 5: return "_5"
+	case 6: return "_6"
+	case 7: return "_7"
+	}
+	return "_invalid"
+}
+
+multi_result_info :: proc(e: ^Emitter, p: ^ast.Proc_Lit) -> (Multi_Result, bool) {
+	info: Multi_Result
+	if p == nil || p.type == nil || p.type.results == nil {
+		return info, false
+	}
+	total := 0
+	for field in p.type.results.list {
+		if field == nil || field.type == nil {
+			return info, false
+		}
+		repeat := max(1, len(field.names))
+		if total+repeat > MAX_MULTI_RESULTS {
+			return info, false
+		}
+		t := resolved_type(e, field.type)
+		if t == .Unknown || t == .Void || t == .Slice_U8 || t == .String {
+			return info, false
+		}
+		for _ in 0..<repeat {
+			info.types[total] = t
+			total += 1
+		}
+	}
+	if total <= 1 {
+		return info, false
+	}
+	info.count = total
+	return info, true
+}
+
+write_multi_result_name :: proc(e: ^Emitter, proc_name: string) {
+	write(e, "bor_ret_")
+	write(e, proc_name)
+}
+
+emit_multi_result_type :: proc(e: ^Emitter, proc_name: string, info: Multi_Result) -> bool {
+	write(e, "typedef struct {\n")
+	e.depth += 1
+	for i in 0..<info.count {
+		ct, known := c_type_name(info.types[i])
+		if !known {
+			return fail(e, "multiple return component type")
+		}
+		indent(e)
+		write(e, ct)
+		write(e, " ")
+		write(e, multi_field_name(i))
+		write(e, ";\n")
+	}
+	e.depth -= 1
+	write(e, "} ")
+	write_multi_result_name(e, proc_name)
+	write(e, ";\n")
+	return true
 }
 
 enum_selector :: proc(e: ^Emitter, expr: ^ast.Expr) -> (type_name, field_name: string, ok: bool) {
@@ -556,6 +637,16 @@ emit_expr :: proc(e: ^Emitter, expr: ^ast.Expr) -> bool {
 	return fail(e, "expression node at %s:%d", expr.pos.file, expr.pos.line)
 }
 
+emit_deferred_range :: proc(e: ^Emitter, first: int) -> bool {
+	if first < 0 || first > len(e.defers) {
+		return fail(e, "defer stack corruption")
+	}
+	for i := len(e.defers)-1; i >= first; i -= 1 {
+		if !emit_stmt(e, e.defers[i]) do return false
+	}
+	return true
+}
+
 emit_block :: proc(e: ^Emitter, stmt: ^ast.Stmt) -> bool {
 	if stmt == nil {
 		return fail(e, "nil block")
@@ -565,11 +656,14 @@ emit_block :: proc(e: ^Emitter, stmt: ^ast.Stmt) -> bool {
 		return fail(e, "expected block at %s:%d", stmt.pos.file, stmt.pos.line)
 	}
 
+	defer_mark := len(e.defers)
 	write(e, "{\n")
 	e.depth += 1
 	for s in b.stmts {
 		if !emit_stmt(e, s) do return false
 	}
+	if !emit_deferred_range(e, defer_mark) do return false
+	e.defers = e.defers[:defer_mark]
 	e.depth -= 1
 	indent(e)
 	write(e, "}\n")
@@ -599,9 +693,59 @@ emit_fixed_array_local :: proc(e: ^Emitter, name: string, lit: ^ast.Comp_Lit, at
 	return true
 }
 
+emit_multi_local_decl :: proc(e: ^Emitter, d: ^ast.Value_Decl) -> bool {
+	if len(d.names) <= 1 || len(d.values) != 1 {
+		return fail(e, "multiple return declaration shape")
+	}
+	call, is_call := d.values[0].derived.(^ast.Call_Expr)
+	if !is_call {
+		return fail(e, "multi-name local declaration without call")
+	}
+	callee, named := ident_name(call.expr)
+	if !named {
+		return fail(e, "multiple return indirect call")
+	}
+	info, found := e.multi_results[callee]
+	if !found || info.count != len(d.names) {
+		return fail(e, "multiple return arity for %s", callee)
+	}
+
+	temp_id := e.multi_temp_counter
+	e.multi_temp_counter += 1
+
+	indent(e)
+	write_multi_result_name(e, callee)
+	fmt.sbprintf(&e.out, " __bor_multi_%d = ", temp_id)
+	if !emit_expr(e, d.values[0]) do return false
+	write(e, ";\n")
+
+	for name_expr, i in d.names {
+		name, name_ok := ident_name(name_expr)
+		if !name_ok {
+			return fail(e, "multiple return local name")
+		}
+		ct, known := c_type_name(info.types[i])
+		if !known {
+			return fail(e, "multiple return local type")
+		}
+		e.locals[name] = info.types[i]
+		indent(e)
+		write(e, ct)
+		write(e, " ")
+		write(e, name)
+		fmt.sbprintf(&e.out, " = __bor_multi_%d.", temp_id)
+		write(e, multi_field_name(i))
+		write(e, ";\n")
+	}
+	return true
+}
+
 emit_local_decl :: proc(e: ^Emitter, d: ^ast.Value_Decl) -> bool {
+	if len(d.names) > 1 {
+		return emit_multi_local_decl(e, d)
+	}
 	if len(d.names) != 1 || len(d.values) != 1 {
-		return fail(e, "multi-name local declaration")
+		return fail(e, "local declaration shape")
 	}
 	name, named := ident_name(d.names[0])
 	if !named {
@@ -610,9 +754,6 @@ emit_local_decl :: proc(e: ^Emitter, d: ^ast.Value_Decl) -> bool {
 	value := d.values[0]
 
 	if lit, is_compound := value.derived.(^ast.Comp_Lit); is_compound {
-		if lit.type == nil {
-			return fail(e, "untyped compound literal local")
-		}
 		if at, is_array := lit.type.derived.(^ast.Array_Type); is_array {
 			return emit_fixed_array_local(e, name, lit, at)
 		}
@@ -673,6 +814,88 @@ emit_local_decl :: proc(e: ^Emitter, d: ^ast.Value_Decl) -> bool {
 	return true
 }
 
+emit_return_stmt :: proc(e: ^Emitter, n: ^ast.Return_Stmt) -> bool {
+	info, is_multi := e.multi_results[e.current_proc]
+	if is_multi {
+		if len(n.results) != info.count {
+			return fail(e, "multiple return result count in %s", e.current_proc)
+		}
+		if len(e.defers) == 0 {
+			indent(e)
+			write(e, "return (")
+			write_multi_result_name(e, e.current_proc)
+			write(e, "){")
+			for result, i in n.results {
+				if i > 0 do write(e, ", ")
+				if !emit_expr(e, result) do return false
+			}
+			write(e, "};\n")
+			return true
+		}
+
+		indent(e)
+		write(e, "{\n")
+		e.depth += 1
+		indent(e)
+		write_multi_result_name(e, e.current_proc)
+		write(e, " __bor_return_value = {")
+		for result, i in n.results {
+			if i > 0 do write(e, ", ")
+			if !emit_expr(e, result) do return false
+		}
+		write(e, "};\n")
+		if !emit_deferred_range(e, 0) do return false
+		indent(e)
+		write(e, "return __bor_return_value;\n")
+		e.depth -= 1
+		indent(e)
+		write(e, "}\n")
+		return true
+	}
+
+	if len(n.results) > 1 {
+		return fail(e, "multiple return values")
+	}
+	if len(e.defers) == 0 {
+		indent(e)
+		write(e, "return")
+		if len(n.results) == 1 {
+			write(e, " ")
+			if !emit_expr(e, n.results[0]) do return false
+		}
+		write(e, ";\n")
+		return true
+	}
+
+	if len(n.results) == 0 {
+		if !emit_deferred_range(e, 0) do return false
+		indent(e)
+		write(e, "return;\n")
+		return true
+	}
+
+	result_type := e.proc_results[e.current_proc]
+	ct, known := c_type_name(result_type)
+	if !known || result_type == .Void {
+		return fail(e, "deferred return type in %s", e.current_proc)
+	}
+	indent(e)
+	write(e, "{\n")
+	e.depth += 1
+	indent(e)
+	write(e, ct)
+	write(e, " __bor_return_value = ")
+	if !emit_expr(e, n.results[0]) do return false
+	write(e, ";\n")
+	if !emit_deferred_range(e, 0) do return false
+	indent(e)
+	write(e, "return __bor_return_value;\n")
+	e.depth -= 1
+	indent(e)
+	write(e, "}\n")
+	return true
+}
+
 emit_stmt :: proc(e: ^Emitter, stmt: ^ast.Stmt) -> bool {
 	if stmt == nil {
 		return true
@@ -686,16 +909,13 @@ emit_stmt :: proc(e: ^Emitter, stmt: ^ast.Stmt) -> bool {
 		return emit_local_decl(e, n)
 
 	case ^ast.Return_Stmt:
-		if len(n.results) > 1 {
-			return fail(e, "multiple return values")
+		return emit_return_stmt(e, n)
+
+	case ^ast.Defer_Stmt:
+		if n.stmt == nil {
+			return fail(e, "nil defer statement")
 		}
-		indent(e)
-		write(e, "return")
-		if len(n.results) == 1 {
-			write(e, " ")
-			if !emit_expr(e, n.results[0]) do return false
-		}
-		write(e, ";\n")
+		append(&e.defers, n.stmt)
 		return true
 
 	case ^ast.Expr_Stmt:
@@ -831,15 +1051,19 @@ emit_params :: proc(e: ^Emitter, p: ^ast.Proc_Lit, record_locals: bool) -> bool 
 }
 
 emit_proc_head :: proc(e: ^Emitter, name: string, p: ^ast.Proc_Lit, prototype: bool) -> bool {
-	result_type := proc_result_type(e, p)
-	ct, known_result := c_type_name(result_type)
-	if !known_result {
-		return fail(e, "procedure result type for %s", name)
-	}
 	if !e.proc_exports[name] {
 		write(e, "static ")
 	}
-	write(e, ct)
+	if _, is_multi := e.multi_results[name]; is_multi {
+		write_multi_result_name(e, name)
+	} else {
+		result_type := proc_result_type(e, p)
+		ct, known_result := c_type_name(result_type)
+		if !known_result {
+			return fail(e, "procedure result type for %s", name)
+		}
+		write(e, ct)
+	}
 	write(e, " ")
 	write(e, name)
 	write(e, "(")
@@ -957,6 +1181,9 @@ collect_globals :: proc(e: ^Emitter, pkg: ^ast.Package) {
 			if p, is_proc := d.values[0].derived.(^ast.Proc_Lit); is_proc {
 				e.proc_results[name] = proc_result_type(e, p)
 				e.proc_exports[name] = decl_is_exported(d)
+				if info, is_multi := multi_result_info(e, p); is_multi {
+					e.multi_results[name] = info
+				}
 			}
 		}
 	}
@@ -992,15 +1219,22 @@ emit_phase :: proc(e: ^Emitter, pkg: ^ast.Package, phase: int) -> bool {
 
 			value := d.values[0]
 			if p, is_proc := value.derived.(^ast.Proc_Lit); is_proc {
-				if phase == 1 {
+				if phase == 0 {
+					if info, is_multi := e.multi_results[name]; is_multi {
+						if !emit_multi_result_type(e, name, info) do return false
+					}
+				} else if phase == 1 {
 					if !emit_proc_head(e, name, p, true) do return false
 					write(e, ";\n")
 				} else if phase == 2 {
 					reset_locals(e)
+					e.defers = e.defers[:0]
+					e.current_proc = name
 					if !emit_proc_head(e, name, p, false) do return false
 					write(e, " ")
 					if !emit_block(e, p.body) do return false
 					write(e, "\n")
+					e.current_proc = ""
 				}
 				continue
 			}
@@ -1046,6 +1280,7 @@ emit_c99 :: proc(pkg: ^ast.Package) -> (string, bool) {
 		enum_backing  = make(map[string]C_Type),
 		proc_results  = make(map[string]C_Type),
 		proc_exports  = make(map[string]bool),
+		multi_results = make(map[string]Multi_Result),
 	}
 	strings.builder_init(&e.out)
 	defer delete(e.locals)
@@ -1055,6 +1290,8 @@ emit_c99 :: proc(pkg: ^ast.Package) -> (string, bool) {
 	defer delete(e.enum_backing)
 	defer delete(e.proc_results)
 	defer delete(e.proc_exports)
+	defer delete(e.multi_results)
+	defer delete(e.defers)
 
 	collect_types(&e, pkg)
 	collect_globals(&e, pkg)
