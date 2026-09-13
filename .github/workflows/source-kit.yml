@@ -20,6 +20,7 @@ jobs:
           mkdir kit
           git archive --format=tar.gz --prefix=Bor/ HEAD > kit/Bor.tar.gz
           printf 'bor %s\n' "$GITHUB_SHA" > kit/revisions.txt
+          git log -1 --format='%H%n%T%n%s' > kit/source-commit.txt
           git clone https://github.com/Spaceghost/codin.git "$RUNNER_TEMP/codin"
           git -C "$RUNNER_TEMP/codin" checkout --detach 5cd28a63023c24079f16e9a51a0140501cebdfa2
           git -C "$RUNNER_TEMP/codin" archive --format=tar.gz --prefix=codin/ HEAD > kit/codin.tar.gz
