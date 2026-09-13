@@ -46,6 +46,13 @@ jobs:
       - name: Build Bor and prove both strict C99 backends
         run: make test
 
+      - name: Prove emit-c follows current shootout winner
+        shell: bash
+        run: |
+          set -euxo pipefail
+          build/bor emit-c test/melodica -o "$RUNNER_TEMP/default.c"
+          cmp "$RUNNER_TEMP/default.c" build/direct-melodica.c
+
       - name: Prove MIR dump determinism
         shell: bash
         run: |
