@@ -663,7 +663,9 @@ emit_block :: proc(e: ^Emitter, stmt: ^ast.Stmt) -> bool {
 		if !emit_stmt(e, s) do return false
 	}
 	if !emit_deferred_range(e, defer_mark) do return false
-	e.defers = e.defers[:defer_mark]
+	if err := resize(&e.defers, defer_mark); err != nil {
+		return fail(e, "defer stack resize")
+	}
 	e.depth -= 1
 	indent(e)
 	write(e, "}\n")
@@ -1228,7 +1230,9 @@ emit_phase :: proc(e: ^Emitter, pkg: ^ast.Package, phase: int) -> bool {
 					write(e, ";\n")
 				} else if phase == 2 {
 					reset_locals(e)
-					e.defers = e.defers[:0]
+					if err := resize(&e.defers, 0); err != nil {
+						return fail(e, "defer stack reset")
+					}
 					e.current_proc = name
 					if !emit_proc_head(e, name, p, false) do return false
 					write(e, " ")
