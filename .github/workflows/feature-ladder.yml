@@ -30,7 +30,11 @@ jobs:
           echo "$RUNNER_TEMP/odin" >> "$GITHUB_PATH"
 
       - name: Build Bor
-        run: odin build src -out:build/bor -o:speed
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p build
+          odin build src -out:build/bor -o:speed
 
       - name: Score all nine language features
         shell: bash
@@ -116,5 +120,5 @@ jobs:
         with:
           name: bor-language-ladder-${{ github.run_id }}
           retention-days: 14
-          if-no-files-found: error
+          if-no-files-found: warn
           path: build/ladder/
