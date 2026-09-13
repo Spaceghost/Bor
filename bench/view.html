@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Borr | Compiler Matrix</title>
+<style>
+:root{color-scheme:dark;font:15px system-ui;background:#10151c;color:#dbe5ef}*{box-sizing:border-box}body{margin:0;padding:28px;max-width:1800px;margin:auto}h1{font-size:32px;margin:5px 0}h2{font-size:18px}p{line-height:1.5;color:#aabccc;max-width:1100px}small{color:#aabccc}header{border-bottom:1px solid #324452;padding-bottom:18px}label{display:inline-block;margin:12px 18px 12px 0}select,button{background:#202b38;border:1px solid #496071;color:inherit;padding:9px;border-radius:5px}table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}td,th{padding:10px 14px;border-bottom:1px solid #30404f;text-align:right}td:first-child,th:first-child{text-align:left}th{background:#18232f}td:first-child{font-family:monospace}.table{overflow-x:auto}.panes{display:grid;grid-template-columns:1fr 1fr;gap:18px}article{min-width:0}pre{background:#151e28;border:1px solid #30404f;padding:16px;overflow:auto;white-space:pre;max-height:680px;font:13px/1.5 ui-monospace,monospace}summary{cursor:pointer;padding:12px}.badge{font:12px monospace;letter-spacing:.12em;color:#99ddcf}.excluded{color:#f1b78d}@media(max-width:850px){body{padding:14px}.panes{grid-template-columns:1fr}}
+</style></head><body>
+<header><div class="badge">BORR / REPRODUCIBLE COMPILER LAB</div><h1>One workload. Every toolchain.</h1><p id="meta"></p><p>Kernel compilation and link-driver timings are separate. Native Odin/Zig rows reuse the same language-compiler object in every column. C rows compile the source with the named compiler. A shared GCC-built timing harness isolates kernel performance. No LTO; x86-64 baseline.</p><small>This is an offline evidence snapshot, not a live compilation service. No source or telemetry leaves this page.</small></header>
+<label>Workload <select id="workload"></select></label><label>Metric <select id="metric"><option value="runtime">Runtime ns/input-byte (lower is better)</option><option value="build">Kernel build ms</option><option value="link">Link driver ms</option><option value="text">Exported kernel text bytes</option></select></label>
+<div class="table"><table id="matrix"></table></div><p id="note"></p>
+<details><summary>Odin-to-C emission timings (before kernel compilation)</summary><pre id="emitters"></pre></details>
+<h2>Side-by-side source and machine code</h2><div class="panes"><article><select id="left"></select><div id="leftInfo"></div><pre id="leftSource"></pre><pre id="leftAsm"></pre></article><article><select id="right"></select><div id="rightInfo"></div><pre id="rightSource"></pre><pre id="rightAsm"></pre></article></div>
+<details><summary>Toolchain versions, cache policy, and provenance</summary><pre id="provenance"></pre></details>
+<script id="data" type="application/json">__MATRIX_DATA__</script>
+<script>
+'use strict';
+const data=JSON.parse(document.getElementById('data').textContent),$=id=>document.getElementById(id);
+$('meta').textContent=`${data.status.toUpperCase()} | ${data.revision} | ${data.cpu_model} | runtime CPU ${data.runtime_cpu}`;
+$('emitters').textContent=Object.entries(data.emitters).map(([name,v])=>`${name}: median ${v.p50.toFixed(3)} ms; p95 ${v.p95.toFixed(3)} ms; n=${v.n}`).join('\n');
+$('provenance').textContent=JSON.stringify({versions:data.versions,method:data.method,harness_sha256:data.harness_sha256,source_hashes:data.source_hashes},null,2);
+for(const w of data.workloads){const o=new Option(`${w.shape} / ${w.bytes.toLocaleString()} bytes`,w.id);$('workload').add(o)}
+$('workload').value='mixed-4096';
+function update(){
+ const metric=$('metric').value,w=$('workload').value,t=$('matrix');t.replaceChildren();
+ const columns=['gcc','clang','zig-cc','tinycc'];let tr=t.insertRow();
+ for(const title of ['Implementation / code generator',...columns]){const th=document.createElement('th');th.textContent=title;tr.append(th)}
+ for(const name of [...new Set(data.cells.map(c=>c.implementation))]){
+  tr=t.insertRow();tr.insertCell().textContent=name;
+  for(const compiler of columns){const cell=data.cells.find(c=>c.implementation===name&&c.toolchain===compiler),td=tr.insertCell();
+   if(!cell||cell.status!=='passed'){td.textContent=cell?.status||'N/A';td.className='excluded';td.title=cell?.error||'';continue}
+   let v=metric==='runtime'?cell.runtime[w]?.p50:metric==='build'?cell.kernel_build.p50:metric==='link'?cell.link_driver.p50:cell.kernel_text_bytes;
+   td.textContent=v==null?'pending':v.toLocaleString(undefined,{maximumFractionDigits:3});
+   td.title=metric==='runtime'?`p95 ${cell.runtime[w]?.p95}; MAD ${cell.runtime[w]?.mad}; ${cell.lane}`:cell.lane;
+  }
+ }
+ $('note').textContent=metric==='runtime'?'Median runtime; hover for p95 and median absolute deviation. Shapes have different escape rates. Do not infer a universal winner.':metric==='text'?'Sum of the three exported melodica_* function bodies only. Excludes lookup tables, helper bodies, runtime, and executable headers. Complete size output is retained in report.json.':metric==='build'?'Fresh source path per build sample, warm toolchain/global caches. Native build timings repeat across columns because native objects are compiled once. Emission timing is separate.':'Repeated compiler-driver link invocation on fixed object inputs; includes its cache behavior, not C source compilation.';
+}
+for(const side of ['left','right']){
+ for(const cell of data.cells){$(side).add(new Option(cell.id,cell.id))}
+ $(side).value=side==='left'?'bor-optimized--zig-cc':'c-lut--zig-cc';
+ const render=()=>{const c=data.cells.find(c=>c.id===$(side).value);if(!c)return;
+  $(side+'Info').textContent=`${c.status} | ${c.lane} | ${c.optimization}`;
+  $(side+'Source').textContent=c.source;
+  $(side+'Asm').textContent=(c.error||'')+'\n'+(c.assembly||'No disassembly retained')+'\n\nKernel command:\n'+(c.kernel_build?.argv||[]).join(' ')+'\n\nLink command:\n'+(c.link_driver?.argv||[]).join(' ');
+ };$(side).addEventListener('change',render);render();
+}
+$('metric').addEventListener('change',update);$('workload').addEventListener('change',update);update();
+</script></body></html>

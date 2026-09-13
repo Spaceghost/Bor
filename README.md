@@ -87,3 +87,15 @@ Codin is an independent executable reference where its implemented surface overl
 The next language ladder is a real address/lvalue model, structs and fixed arrays, enums, slices/strings, multiple returns and `defer`, unions, imports/runtime integration, and generics. Each addition needs positive, negative, and differential fixtures before becoming supported.
 
 The Graal/Sulong inspiration is an inspectable semantic representation shared by execution, optimization, and tooling. Borr currently emits C ahead of time. It does not contain a JIT, Truffle integration, speculative optimization, or a self-hosting compiler.
+
+## Native and C toolchain matrix
+
+`make matrix` adds native Odin, native Zig ReleaseFast/ReleaseSafe, algorithm-matched
+C, and optimized lookup-table C alongside the three Borr paths and pinned Codin.
+GCC, Clang, zig-cc, and TinyCC occupy separate columns. Native rows keep their
+language-generated object fixed and vary only the link driver.
+
+Open `build/matrix/index.html` for an offline side-by-side source/assembly browser,
+workload selectors, timings, code sizes, flags, and provenance. Raw JSON, commands,
+objects, and correctness diagnostics are retained in CI artifacts.
+See [matrix methodology and reproduction](docs/toolchain-matrix.md).

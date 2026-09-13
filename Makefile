@@ -128,3 +128,8 @@ audit: bor
 
 benchmark: bor
 	ODIN="$(ODIN)" CC="$(CC)" CLANG="$(CLANG)" python3 tools/benchmark.py $(BENCH_ARGS)
+
+.PHONY: matrix benchmark-matrix
+matrix benchmark-matrix: bor
+	python3 -m unittest discover -s tools -p test_matrix.py
+	ODIN="$(ODIN)" CC="$(CC)" CLANG="$(CLANG)" python3 tools/matrix.py $(MATRIX_ARGS)
