@@ -1,0 +1,28 @@
+name: Matrix toolchain kit
+on:
+  push:
+    paths: ['.github/workflows/matrix-toolchains.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  kit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Fetch pinned Zig and distro TinyCC
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir kit
+          curl -fL --retry 3 https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz -o kit/zig.tar.xz
+          echo '70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00  kit/zig.tar.xz' | sha256sum -c -
+          sudo apt-get update -qq
+          (cd kit && apt-get download tcc)
+          (cd kit && sha256sum * > SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: matrix-toolchains-${{ github.run_id }}
+          path: kit/
+          retention-days: 7
+          if-no-files-found: error
