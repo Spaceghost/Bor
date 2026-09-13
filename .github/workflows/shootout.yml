@@ -34,6 +34,21 @@ jobs:
       - name: Build Bor and prove both strict C99 backends
         run: make test
 
+      - name: Aggregate completeness scoreboard
+        shell: bash
+        run: |
+          set -u
+          printf '%-18s %-8s %-8s %-8s\n' feature native direct mir
+          for feature in structs arrays enums slices_strings; do
+            native=FAIL; direct=FAIL; mir=FAIL
+            if odin check "test/features/$feature" >/tmp/${feature}.native.out 2>/tmp/${feature}.native.err; then native=PASS; fi
+            if build/bor emit-c-direct "test/features/$feature" -o "/tmp/${feature}.direct.c" >/tmp/${feature}.direct.out 2>/tmp/${feature}.direct.err; then direct=PASS; fi
+            if build/bor emit-c-mir "test/features/$feature" -o "/tmp/${feature}.mir.c" >/tmp/${feature}.mir.out 2>/tmp/${feature}.mir.err; then mir=PASS; fi
+            printf '%-18s %-8s %-8s %-8s\n' "$feature" "$native" "$direct" "$mir"
+            if test "$direct" = FAIL; then printf '  direct: '; head -n 1 "/tmp/${feature}.direct.err" || true; fi
+            if test "$mir" = FAIL; then printf '  mir:    '; head -n 1 "/tmp/${feature}.mir.err" || true; fi
+          done
+
       - name: Prove deterministic C emission
         shell: bash
         run: |
