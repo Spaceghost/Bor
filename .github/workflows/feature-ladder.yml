@@ -1,0 +1,120 @@
+name: Odin language completeness ladder
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  ODIN_VERSION: dev-2026-09
+  ODIN_SHA256: 167c3e1d7056419dad2e04bb3bd98715b7ff286d4c125f3c5a5ee337c6254283
+
+jobs:
+  ladder:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned Odin
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 "https://github.com/odin-lang/Odin/releases/download/${ODIN_VERSION}/odin-linux-amd64-${ODIN_VERSION}.tar.gz" -o "$RUNNER_TEMP/odin.tar.gz"
+          echo "$ODIN_SHA256  $RUNNER_TEMP/odin.tar.gz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/odin"
+          tar -xzf "$RUNNER_TEMP/odin.tar.gz" -C "$RUNNER_TEMP/odin" --strip-components=1
+          echo "$RUNNER_TEMP/odin" >> "$GITHUB_PATH"
+
+      - name: Build Bor
+        run: odin build src -out:build/bor -o:speed
+
+      - name: Score all nine language features
+        shell: bash
+        run: |
+          set -u
+          features='structs arrays enums slices_strings multiple_returns defers unions imports generics'
+          mkdir -p build/ladder
+          printf 'feature\tnative\tdirect\tmir\tdirect_reason\tmir_reason\n' > build/ladder/report.tsv
+          for feature in $features; do
+            native=FAIL; direct=FAIL; mir=FAIL; direct_reason=''; mir_reason=''
+            if odin check "test/features/$feature" -no-entry-point >"build/ladder/$feature.native.out" 2>"build/ladder/$feature.native.err"; then
+              native=PASS
+            fi
+            if build/bor emit-c-direct "test/features/$feature" -o "build/ladder/$feature.direct.c" >"build/ladder/$feature.direct.out" 2>"build/ladder/$feature.direct.err" \
+               && gcc -std=c99 -pedantic-errors -Wall -Wextra -Werror -O3 -c "build/ladder/$feature.direct.c" -o "build/ladder/$feature.direct.o" >>"build/ladder/$feature.direct.out" 2>>"build/ladder/$feature.direct.err"; then
+              direct=PASS
+            else
+              direct_reason=$(head -n 1 "build/ladder/$feature.direct.err" | tr '\t\n' '  ')
+            fi
+            if build/bor emit-c-mir "test/features/$feature" -o "build/ladder/$feature.mir.c" >"build/ladder/$feature.mir.out" 2>"build/ladder/$feature.mir.err" \
+               && gcc -std=c99 -pedantic-errors -Wall -Wextra -Werror -O3 -c "build/ladder/$feature.mir.c" -o "build/ladder/$feature.mir.o" >>"build/ladder/$feature.mir.out" 2>>"build/ladder/$feature.mir.err"; then
+              mir=PASS
+            else
+              mir_reason=$(head -n 1 "build/ladder/$feature.mir.err" | tr '\t\n' '  ')
+            fi
+            printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$feature" "$native" "$direct" "$mir" "$direct_reason" "$mir_reason" >> build/ladder/report.tsv
+          done
+          column -t -s $'\t' build/ladder/report.tsv || cat build/ladder/report.tsv
+          python3 - <<'PY'
+          import csv, json
+          from pathlib import Path
+          rows = list(csv.DictReader(Path('build/ladder/report.tsv').open(), delimiter='\t'))
+          live = [r for r in rows if r['native'] == 'PASS']
+          scores = {lane: sum(r[lane] == 'PASS' for r in live) for lane in ('direct', 'mir')}
+          data = {'native_features': len(live), 'scores': scores, 'rows': rows}
+          Path('build/ladder/report.json').write_text(json.dumps(data, indent=2) + '\n')
+          print(json.dumps(data, indent=2))
+          PY
+
+      - name: Prove claimed direct features with GCC and Clang
+        shell: bash
+        run: |
+          set -euxo pipefail
+          units=()
+          for feature in structs arrays enums slices_strings multiple_returns defers; do
+            c="build/ladder/$feature.direct.c"
+            test -s "$c"
+            gcc -std=c99 -pedantic-errors -Wall -Wextra -Werror -O3 -c "$c" -o "$RUNNER_TEMP/$feature.gcc.o"
+            clang -std=c99 -pedantic-errors -Wall -Wextra -Werror -O3 -c "$c" -o "$RUNNER_TEMP/$feature.clang.o"
+            units+=("$c")
+          done
+          gcc -std=c99 -pedantic-errors -Wall -Wextra -Werror -O3 test/features/claimed_smoke.c "${units[@]}" -o "$RUNNER_TEMP/claimed-gcc"
+          clang -std=c99 -pedantic-errors -Wall -Wextra -Werror -O3 test/features/claimed_smoke.c "${units[@]}" -o "$RUNNER_TEMP/claimed-clang"
+          "$RUNNER_TEMP/claimed-gcc"
+          "$RUNNER_TEMP/claimed-clang"
+
+      - name: Prove native multiple-return and defer behavior
+        shell: bash
+        run: |
+          set -euxo pipefail
+          odin build test/features/multiple_returns -build-mode:static -out:"$RUNNER_TEMP/multiple_returns.a" -o:speed -reloc-mode:pic -no-entry-point
+          odin build test/features/defers -build-mode:static -out:"$RUNNER_TEMP/defers.a" -o:speed -reloc-mode:pic -no-entry-point
+          cat > "$RUNNER_TEMP/multiple_returns.c" <<'C'
+          #include <assert.h>
+          #include <stdint.h>
+          uint32_t bor_test_multiple_returns(void);
+          int main(void) { assert(bor_test_multiple_returns() == 43); return 0; }
+          C
+          cat > "$RUNNER_TEMP/defers.c" <<'C'
+          #include <assert.h>
+          #include <stdint.h>
+          uint32_t bor_test_defer(void);
+          int main(void) { assert(bor_test_defer() == 19); return 0; }
+          C
+          cc -std=c11 -Wall -Wextra -Werror -O2 "$RUNNER_TEMP/multiple_returns.c" "$RUNNER_TEMP/multiple_returns.a" -lm -ldl -lpthread -o "$RUNNER_TEMP/native-multiple_returns"
+          cc -std=c11 -Wall -Wextra -Werror -O2 "$RUNNER_TEMP/defers.c" "$RUNNER_TEMP/defers.a" -lm -ldl -lpthread -o "$RUNNER_TEMP/native-defers"
+          "$RUNNER_TEMP/native-multiple_returns"
+          "$RUNNER_TEMP/native-defers"
+
+      - name: Upload language ladder evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bor-language-ladder-${{ github.run_id }}
+          retention-days: 14
+          if-no-files-found: error
+          path: build/ladder/
