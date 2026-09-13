@@ -1,7 +1,7 @@
 # Native and C toolchain matrix
 
 Run `make matrix` (alias: `make benchmark-matrix`). The existing `make benchmark`
-and the semantic audit remain unchanged. The new report is
+remains available; the expanded semantic audit is a separate correctness gate. The new report is
 `build/matrix/index.html`: a self-contained offline, side-by-side source and
 machine-code browser. It requires no web server and performs no network requests.
 It is an evidence viewer, not a live Compiler Explorer deployment.
@@ -13,6 +13,7 @@ It is an evidence viewer, not a live Compiler Explorer deployment.
 | Borr direct | AST to C control, then selected C compiler |
 | Borr raw MIR | Verified unoptimized MIR to C, then selected C compiler |
 | Borr optimized MIR | Verified optimized MIR to C, then selected C compiler |
+| Borr expression | Verified MIR with bounded pure-expression reconstruction, then selected C compiler |
 | Codin (optional locally, required in CI) | Pinned reference to C, then selected C compiler |
 | C scalar | Handwritten, algorithm-matched two-pass branch implementation |
 | C LUT | Optimized scalar implementation using immutable classification/hex tables |
@@ -20,7 +21,7 @@ It is an evidence viewer, not a live Compiler Explorer deployment.
 | Native Zig fast | LUT algorithm, LLVM, `-O ReleaseFast` |
 | Native Zig safe | The same LUT algorithm, LLVM, `-O ReleaseSafe` |
 
-Columns are **GCC, Clang, zig-cc, and TinyCC**. The first six rows genuinely
+Columns are **GCC, Clang, zig-cc, and TinyCC**. The first seven rows genuinely
 recompile C with each column's compiler. The native rows use one unchanged
 Odin/Zig-produced object or archive across the four link drivers. A C compiler
 cannot compile Odin or Zig source. Native kernel-build timings repeat across
@@ -79,7 +80,7 @@ native Odin on every timed sample.
 
 This gate is scoped to this workload. It does not erase the direct emitter's
 known wider-language miscompilations, prove pointer aliasing semantics, or replace
-the existing 655,360-result semantic audit.
+the expanded 2,097,152-result semantic audit.
 
 TinyCC build/link/correctness failures are retained with diagnostics as excluded
 cells, never silently assigned a timing. GCC/Clang/zig-cc failures fail the job.

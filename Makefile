@@ -133,3 +133,8 @@ benchmark: bor
 matrix benchmark-matrix: bor
 	python3 -m unittest discover -s tools -p test_matrix.py
 	ODIN="$(ODIN)" CC="$(CC)" CLANG="$(CLANG)" python3 tools/matrix.py $(MATRIX_ARGS)
+
+.PHONY: completeness
+completeness: bor
+	python3 -m unittest discover -s tools -p test_completeness.py
+	ODIN="$(ODIN)" CC="$(CC)" CLANG="$(CLANG)" python3 tools/completeness.py --baseline test/completeness-baseline.json $(COMPLETENESS_ARGS)

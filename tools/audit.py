@@ -20,12 +20,12 @@ OUT = ROOT / "build" / "audit"
 ODIN = shlex.split(os.environ.get("ODIN", "odin"))
 COMPILERS = {"gcc": shlex.split(os.environ.get("CC", "gcc")),
              "clang": shlex.split(os.environ.get("CLANG", "clang"))}
-BOR = str(ROOT / "build" / "bor")
+BOR = os.environ.get("BOR", str(ROOT / "build" / "bor"))
 STRICT = ["-std=c99", "-pedantic-errors", "-Wall", "-Wextra", "-Werror"]
 REPORT: dict = {"schema": 1, "status": "running", "commands": [], "comparisons": [],
                 "negative_tests": [], "source_seed": "0xB0772026",
                 "input_seeds": [20260912, 3735928559],
-                "functions": 128, "inputs_per_seed": 256}
+                "functions": 256, "inputs_per_seed": 256}
 
 
 def run(label: str, command: list[str], *, timeout: int = 90,
@@ -74,8 +74,8 @@ def workload(name: str, source: Path, host: Path, seeds: list[int | None], lengt
             raise RuntimeError(f"native oracle {name}: expected {length} bytes, got {len(data)}")
         expected[seed] = data
 
-    for mode in ("emit-c-mir-raw", "emit-c"):
-        tag = "raw" if mode.endswith("raw") else "optimized"
+    for mode in ("emit-c-mir-raw", "emit-c", "emit-c-expr"):
+        tag = "raw" if mode.endswith("raw") else "expression" if mode == "emit-c-expr" else "optimized"
         generated = OUT / f"{name}-{tag}.c"
         run(f"{name}-{tag}-emit", [BOR, mode, str(source), "-o", str(generated)])
         repeat = OUT / f"{name}-{tag}-repeat.c"
@@ -91,7 +91,7 @@ def workload(name: str, source: Path, host: Path, seeds: list[int | None], lengt
                 for seed in seeds:
                     result = run(f"{label}-{seed}", [str(exe)] + ([] if seed is None else [str(seed)]), timeout=20)
                     compare(f"{label}-{seed}", result.stdout, expected[seed], length)
-            if tag == "optimized":
+            if tag != "raw":
                 label = f"{name}-{tag}-{compiler}-sanitized"
                 exe = OUT / label
                 run(label + "-build", command + STRICT + ["-O1", "-g", "-fsanitize=address,undefined",
@@ -170,12 +170,12 @@ def main() -> None:
         run("generator-build", ODIN + ["build", "tools/generate", "-o:speed", f"-out:{generator}"])
         run("generator", [str(generator), str(generated)])
         workload("semantics", ROOT / "test/semantics", ROOT / "test/c99/semantics_smoke.c", [None], len(b"semantic regression suite passed\n"))
-        workload("generated", generated, generated / "host.c", REPORT["input_seeds"], 128*256*4)
+        workload("generated", generated, generated / "host.c", REPORT["input_seeds"], 256*256*4)
         negatives()
         REPORT["status"] = "passed"
         REPORT["generated_comparisons"] = sum(c["bytes"]//4 for c in REPORT["comparisons"]
             if c["label"].startswith("generated-") and "deterministic" not in c["label"])
-        print(f"PASS: {REPORT['generated_comparisons']} generated result comparisons across 10 variants", flush=True)
+        print(f"PASS: {REPORT['generated_comparisons']} generated result comparisons across 16 variants", flush=True)
     except Exception as error:
         REPORT["status"] = "failed"
         REPORT["error"] = str(error)

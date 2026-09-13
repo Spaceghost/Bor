@@ -15,6 +15,9 @@ Lowerer :: struct {
 	failed:        bool,
 	bindings:      [dynamic]Local_Binding,
 	scope_marks:   [dynamic]int,
+	loops: [dynamic]Lower_Loop,
+	defers: [dynamic]Deferred_Stmt,
+	in_defer: bool,
 }
 
 lower_fail :: proc(l: ^Lowerer, node: ^ast.Node, msg: string, args: ..any) -> bool {
@@ -42,6 +45,8 @@ mir_type_from_ast :: proc(expr: ^ast.Expr) -> MIR_Type {
 		switch n.name {
 		case "bool":    return .Bool
 		case "u8":      return .U8
+		case "u16":     return .U16
+		case "u64":     return .U64
 		case "u32":     return .U32
 		case "uintptr": return .UIntptr
 		}
@@ -210,14 +215,14 @@ lower_logical_and :: proc(l: ^Lowerer, n: ^ast.Binary_Expr) -> (Value_ID, bool) 
 	false_value := new_literal(l, "false", .Bool)
 	emit_op(l, MIR_Inst{kind = .Assign, type = .Bool, dst = result, a = false_value})
 
-	left, left_ok := lower_expr(l, n.left)
+	left, left_ok := lower_value(l, n.left)
 	if !left_ok do return INVALID_VALUE, false
 	rhs_block := new_block(l)
 	end_block := new_block(l)
 	jump_if_false(l, left, end_block)
 
 	begin_block(l, rhs_block)
-	right, right_ok := lower_expr(l, n.right)
+	right, right_ok := lower_value(l, n.right)
 	if !right_ok do return INVALID_VALUE, false
 	emit_op(l, MIR_Inst{kind = .Assign, type = .Bool, dst = result, a = right})
 	jump(l, end_block)
@@ -228,7 +233,7 @@ lower_logical_and :: proc(l: ^Lowerer, n: ^ast.Binary_Expr) -> (Value_ID, bool) 
 
 lower_logical_or :: proc(l: ^Lowerer, n: ^ast.Binary_Expr) -> (Value_ID, bool) {
 	result := new_temp(l, .Bool)
-	left, left_ok := lower_expr(l, n.left)
+	left, left_ok := lower_value(l, n.left)
 	if !left_ok do return INVALID_VALUE, false
 	true_block := new_block(l)
 	rhs_block := new_block(l)
@@ -241,7 +246,7 @@ lower_logical_or :: proc(l: ^Lowerer, n: ^ast.Binary_Expr) -> (Value_ID, bool) {
 	jump(l, end_block)
 
 	begin_block(l, rhs_block)
-	right, right_ok := lower_expr(l, n.right)
+	right, right_ok := lower_value(l, n.right)
 	if !right_ok do return INVALID_VALUE, false
 	emit_op(l, MIR_Inst{kind = .Assign, type = .Bool, dst = result, a = right})
 	jump(l, end_block)
@@ -280,9 +285,9 @@ lower_expr :: proc(l: ^Lowerer, expr: ^ast.Expr) -> (Value_ID, bool) {
 		return lower_expr(l, n.expr)
 
 	case ^ast.Index_Expr:
-		base, base_ok := lower_expr(l, n.expr)
+		base, base_ok := lower_value(l, n.expr)
 		if !base_ok do return INVALID_VALUE, false
-		index, index_ok := lower_expr(l, n.index)
+		index, index_ok := lower_value(l, n.index)
 		if !index_ok do return INVALID_VALUE, false
 		if value_type(l, base) != .U8_Ptr {
 			lower_fail(l, &expr.expr_base, "unsupported index base type")
@@ -303,7 +308,7 @@ lower_expr :: proc(l: ^Lowerer, expr: ^ast.Expr) -> (Value_ID, bool) {
 				lower_fail(l, &expr.expr_base, "scalar cast argument count")
 				return INVALID_VALUE, false
 			}
-			source, source_ok := lower_expr(l, n.args[0])
+			source, source_ok := lower_value(l, n.args[0])
 			if !source_ok do return INVALID_VALUE, false
 			dst := new_temp(l, cast_type)
 			emit_op(l, MIR_Inst{kind = .Cast, type = cast_type, dst = dst, a = source})
@@ -319,7 +324,7 @@ lower_expr :: proc(l: ^Lowerer, expr: ^ast.Expr) -> (Value_ID, bool) {
 		first_arg := u32(len(l.m.call_args))
 		for _ in n.args do append(&l.m.call_args, INVALID_VALUE)
 		for arg, i in n.args {
-			id, arg_ok := lower_expr(l, arg)
+			id, arg_ok := lower_value(l, arg)
 			if !arg_ok do return INVALID_VALUE, false
 			if id == INVALID_VALUE {
 				lower_fail(l, &expr.expr_base, "void expression used as a call argument")
@@ -339,7 +344,7 @@ lower_expr :: proc(l: ^Lowerer, expr: ^ast.Expr) -> (Value_ID, bool) {
 			lower_fail(l, &expr.expr_base, "unary operator %s", n.op.text)
 			return INVALID_VALUE, false
 		}
-		a, operand_ok := lower_expr(l, n.expr)
+		a, operand_ok := lower_value(l, n.expr)
 		if !operand_ok do return INVALID_VALUE, false
 		t := value_type(l, a)
 		if op == .Logical_Not do t = .Bool
@@ -359,9 +364,9 @@ lower_expr :: proc(l: ^Lowerer, expr: ^ast.Expr) -> (Value_ID, bool) {
 			lower_fail(l, &expr.expr_base, "binary operator %s", n.op.text)
 			return INVALID_VALUE, false
 		}
-		a, left_ok := lower_expr(l, n.left)
+		a, left_ok := lower_value(l, n.left)
 		if !left_ok do return INVALID_VALUE, false
-		b, right_ok := lower_expr(l, n.right)
+		b, right_ok := lower_value(l, n.right)
 		if !right_ok do return INVALID_VALUE, false
 		left_type := value_type(l, a)
 		right_type := value_type(l, b)
@@ -371,13 +376,16 @@ lower_expr :: proc(l: ^Lowerer, expr: ^ast.Expr) -> (Value_ID, bool) {
 		emit_op(l, MIR_Inst{kind = .Binary, type = t, dst = dst, a = a, b = b, bin_op = op})
 		return dst, true
 
+	case ^ast.Ternary_If_Expr:
+		return lower_ternary(l, n)
+
 	case ^ast.Type_Cast:
 		t := mir_type_from_ast(n.type)
 		if t == .Invalid {
 			lower_fail(l, &expr.expr_base, "cast type")
 			return INVALID_VALUE, false
 		}
-		a, operand_ok := lower_expr(l, n.expr)
+		a, operand_ok := lower_value(l, n.expr)
 		if !operand_ok do return INVALID_VALUE, false
 		dst := new_temp(l, t)
 		emit_op(l, MIR_Inst{kind = .Cast, type = t, dst = dst, a = a})
@@ -397,8 +405,9 @@ lower_local :: proc(l: ^Lowerer, n: ^ast.Value_Decl) -> bool {
 	if n.type != nil && t == .Invalid do return lower_fail(l, &n.node, "unsupported local type")
 	init := INVALID_VALUE
 	if len(n.values) == 1 {
+		if n.type == nil && defaults_to_signed_integer(n.values[0]) do return lower_fail(l, &n.node, "inferred signed integer/rune locals are not implemented; use an explicit supported type")
 		init_ok: bool
-		init, init_ok = lower_expr(l, n.values[0])
+		init, init_ok = lower_value(l, n.values[0])
 		if !init_ok do return false
 		if t == .Invalid do t = value_type(l, init)
 	} else {
@@ -415,42 +424,27 @@ lower_local :: proc(l: ^Lowerer, n: ^ast.Value_Decl) -> bool {
 
 lower_assign :: proc(l: ^Lowerer, n: ^ast.Assign_Stmt) -> bool {
 	if len(n.lhs) != 1 || len(n.rhs) != 1 do return lower_fail(l, &n.node, "tuple assignment")
-	rhs, rhs_ok := lower_expr(l, n.rhs[0])
+	place, place_ok := lower_place(l, n.lhs[0])
+	if !place_ok do return false
+	rhs, rhs_ok := lower_value(l, n.rhs[0])
 	if !rhs_ok do return false
-
-	if name, named := mir_ident_name(n.lhs[0]); named {
-		dst, found := lookup_value(l, name)
-		if !found do return lower_fail(l, &n.node, "assignment to unknown %s", name)
-		if l.m.values[int(dst)].kind == .Global do return lower_fail(l, &n.node, "assignment to constant %s", name)
-		if n.op.text == "=" {
-			emit_op(l, MIR_Inst{kind = .Assign, type = value_type(l, dst), dst = dst, a = rhs})
-			return true
-		}
-		op, supported := assignment_op(n.op.text)
-		if !supported do return lower_fail(l, &n.node, "assignment operator %s", n.op.text)
-		t := binary_result_type(op, value_type(l, dst), value_type(l, rhs))
-		tmp := new_temp(l, t)
-		emit_op(l, MIR_Inst{kind = .Binary, type = t, dst = tmp, a = dst, b = rhs, bin_op = op})
-		emit_op(l, MIR_Inst{kind = .Assign, type = value_type(l, dst), dst = dst, a = tmp})
-		return true
-	}
-
-	if index, is_index := n.lhs[0].derived.(^ast.Index_Expr); is_index {
-		if n.op.text != "=" do return lower_fail(l, &n.node, "compound indexed assignment")
-		base, base_ok := lower_expr(l, index.expr)
-		if !base_ok do return false
-		idx, index_ok := lower_expr(l, index.index)
-		if !index_ok do return false
-		emit_op(l, MIR_Inst{kind = .Store_Index, type = value_type(l, rhs), dst = base, a = idx, b = rhs})
-		return true
-	}
-
-	return lower_fail(l, &n.node, "assignment lvalue")
+	if n.op.text == "=" { store_place(l, place, rhs); return true }
+	// Odin resolves the place first, evaluates RHS effects, then reads the
+	// old stored value for compound assignment. Do not snapshot it too early.
+	old := load_place(l, place)
+	op, supported := assignment_op(n.op.text)
+	if !supported do return lower_fail(l, &n.node, "assignment operator %s", n.op.text)
+	tmp := new_temp(l, place.type)
+	emit_op(l, MIR_Inst{kind = .Binary, type = place.type, dst = tmp, a = old, b = rhs, bin_op = op})
+	store_place(l, place, tmp)
+	return true
 }
 
 lower_if :: proc(l: ^Lowerer, n: ^ast.If_Stmt) -> bool {
-	if n.init != nil do return lower_fail(l, &n.node, "if initializer")
-	cond, cond_ok := lower_expr(l, n.cond)
+	enter_scope(l)
+	defer leave_scope(l)
+	if n.init != nil && !lower_stmt(l, n.init) do return false
+	cond, cond_ok := lower_value(l, n.cond)
 	if !cond_ok do return false
 	then_block := new_block(l)
 	else_block := new_block(l)
@@ -478,14 +472,16 @@ lower_if :: proc(l: ^Lowerer, n: ^ast.If_Stmt) -> bool {
 lower_range :: proc(l: ^Lowerer, n: ^ast.Range_Stmt) -> bool {
 	enter_scope(l)
 	defer leave_scope(l)
-	if n.init != nil do return lower_fail(l, &n.node, "range initializers are not implemented")
+	label, label_ok := loop_label(l, n.label)
+	if !label_ok do return false
+	if n.init != nil && !lower_stmt(l, n.init) do return false
 	if n.reverse || len(n.vals) != 1 do return lower_fail(l, &n.node, "reverse/multi-value range")
 	name, named := mir_ident_name(n.vals[0])
 	if !named do return lower_fail(l, &n.node, "range index")
 	r, is_range := n.expr.derived.(^ast.Binary_Expr)
 	if !is_range || (r.op.text != "..<" && r.op.text != "..=") do return lower_fail(l, &n.node, "non-bounded range")
 
-	first, first_ok := lower_expr(l, r.left)
+	first, first_ok := lower_value(l, r.left)
 	if !first_ok do return false
 	idx_type := range_index_type(l, r.right)
 	if !mir_unsigned(idx_type) do return lower_fail(l, &n.node, "unsupported range index type")
@@ -495,11 +491,12 @@ lower_range :: proc(l: ^Lowerer, n: ^ast.Range_Stmt) -> bool {
 
 	cond_block := new_block(l)
 	body_block := new_block(l)
+	step_block := new_block(l)
 	end_block := new_block(l)
 	jump(l, cond_block)
 
 	begin_block(l, cond_block)
-	limit, limit_ok := lower_expr(l, r.right)
+	limit, limit_ok := lower_value(l, r.right)
 	if !limit_ok do return false
 	cmp := Binary_Op.Less
 	if r.op.text == "..=" do cmp = .Less_Equal
@@ -508,16 +505,21 @@ lower_range :: proc(l: ^Lowerer, n: ^ast.Range_Stmt) -> bool {
 	jump_if_false(l, cond, end_block)
 
 	begin_block(l, body_block)
-	if !lower_stmt(l, n.body) do return false
-	if !block_terminated(l) {
+	append(&l.loops, Lower_Loop{label = label, break_target = end_block, continue_target = step_block, defer_first = len(l.defers)})
+	body_ok := lower_stmt(l, n.body)
+	pop(&l.loops)
+	if !body_ok do return false
+	if !block_terminated(l) do jump(l, step_block)
+	begin_block(l, step_block)
+	{
 		if r.op.text == "..=" {
 			// An inclusive maximum must exit before increment wraps the index.
-			step_block := new_block(l)
+			increment_block := new_block(l)
 			maximum := new_literal(l, unsigned_max_text(idx_type), idx_type)
 			can_step := new_temp(l, .Bool)
 			emit_op(l, MIR_Inst{kind = .Binary, type = .Bool, dst = can_step, a = index, b = maximum, bin_op = .Not_Equal})
 			jump_if_false(l, can_step, end_block)
-			begin_block(l, step_block)
+			begin_block(l, increment_block)
 		}
 		one := new_literal(l, "1", idx_type)
 		next := new_temp(l, idx_type)
@@ -538,9 +540,23 @@ lower_stmt :: proc(l: ^Lowerer, stmt: ^ast.Stmt) -> bool {
 	case ^ast.Block_Stmt:
 		enter_scope(l)
 		defer leave_scope(l)
+		defer_first := len(l.defers)
+		defer {
+			for len(l.defers) > defer_first { d := pop(&l.defers); delete(d.bindings) }
+		}
+		dead := false
 		for child in n.stmts {
-			if block_terminated(l) do break
+			if block_terminated(l) {
+				// Odin still type-checks unreachable source. Give it an isolated
+				// block rather than silently dropping invalid statements.
+				begin_block(l, new_block(l))
+				dead = true
+			}
 			if !lower_stmt(l, child) do return false
+		}
+		if !block_terminated(l) {
+			if !emit_defers_from(l, defer_first) do return false
+			if dead do jump(l, l.current_block)
 		}
 		return true
 	case ^ast.Value_Decl:
@@ -551,13 +567,17 @@ lower_stmt :: proc(l: ^Lowerer, stmt: ^ast.Stmt) -> bool {
 		_, expr_ok := lower_expr(l, n.expr)
 		return expr_ok
 	case ^ast.Return_Stmt:
+		if l.in_defer do return lower_fail(l, &n.node, "return in defer is not implemented")
 		if len(n.results) > 1 do return lower_fail(l, &n.node, "multiple return values")
 		value := INVALID_VALUE
 		if len(n.results) == 1 {
 			result_ok: bool
-			value, result_ok = lower_expr(l, n.results[0])
+			value, result_ok = lower_value(l, n.results[0])
 			if !result_ok do return false
 		}
+		// A return value is evaluated before deferred statements execute.
+		if value != INVALID_VALUE && len(l.defers) > 0 do value = snapshot_place_operand(l, value)
+		if !emit_defers_from(l, 0) do return false
 		emit_op(l, MIR_Inst{kind = .Return, a = value})
 		l.m.blocks[int(l.current_block)].terminated = true
 		return true
@@ -565,6 +585,12 @@ lower_stmt :: proc(l: ^Lowerer, stmt: ^ast.Stmt) -> bool {
 		return lower_if(l, n)
 	case ^ast.Range_Stmt:
 		return lower_range(l, n)
+	case ^ast.For_Stmt:
+		return lower_for(l, n)
+	case ^ast.Branch_Stmt:
+		return lower_branch(l, n)
+	case ^ast.Defer_Stmt:
+		return register_defer(l, n)
 	}
 
 	return lower_fail(l, nil, "statement AST kind")
@@ -698,6 +724,8 @@ lower_package_to_mir :: proc(pkg: ^ast.Package) -> (m: MIR_Module, ok: bool) {
 	defer delete(l.locals)
 	defer delete(l.bindings)
 	defer delete(l.scope_marks)
+	defer delete(l.loops)
+	defer delete(l.defers)
 
 	if !collect_symbols(&l, pkg) do return m, false
 

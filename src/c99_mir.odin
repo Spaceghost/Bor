@@ -7,6 +7,8 @@ mir_c_type :: proc(t: MIR_Type) -> (string, bool) {
 	case .Void:    return "void", true
 	case .Bool:    return "bool", true
 	case .U8:      return "uint8_t", true
+	case .U16:     return "uint16_t", true
+	case .U64:     return "uint64_t", true
 	case .U32:     return "uint32_t", true
 	case .UIntptr: return "uintptr_t", true
 	case .U8_Ptr:  return "uint8_t *", true
@@ -25,8 +27,12 @@ write_block_label :: proc(b: ^strings.Builder, proc_id: int, block: Block_ID) {
 	write_id(b, int(block))
 }
 
-write_value_ref :: proc(b: ^strings.Builder, m: ^MIR_Module, id: Value_ID) {
+write_value_ref :: proc(b: ^strings.Builder, m: ^MIR_Module, id: Value_ID, plan: ^C_Expression_Plan = nil) {
 	assert(id != INVALID_VALUE)
+	if plan != nil && plan.inline_at[int(id)] != 0 {
+		write_c_expression(b, m, &m.ops[plan.inline_at[int(id)]-1], plan)
+		return
+	}
 	v := &m.values[int(id)]
 	#partial switch v.kind {
 	case .Literal:
@@ -109,6 +115,7 @@ emit_mir_inst :: proc(
 	op_index: int,
 	needs_label: []bool,
 	op: ^MIR_Inst,
+	plan: ^C_Expression_Plan = nil,
 ) -> bool {
 	#partial switch op.kind {
 	case .Nop:
@@ -120,38 +127,38 @@ emit_mir_inst :: proc(
 
 	case .Assign:
 		strings.write_string(b, "    ")
-		write_value_ref(b, m, op.dst)
+		write_value_ref(b, m, op.dst, plan)
 		strings.write_string(b, " = ")
-		write_value_ref(b, m, op.a)
+		write_value_ref(b, m, op.a, plan)
 		strings.write_string(b, ";\n")
 
 	case .Unary:
 		strings.write_string(b, "    ")
-		write_value_ref(b, m, op.dst)
+		write_value_ref(b, m, op.dst, plan)
 		strings.write_string(b, " = (")
 		write_unary_op(b, op.unary_op)
-		write_value_ref(b, m, op.a)
+		write_value_ref(b, m, op.a, plan)
 		strings.write_string(b, ");\n")
 
 	case .Binary:
 		if op.bin_op == .Shift_Left || op.bin_op == .Shift_Right {
-			emit_checked_shift(b, m, op)
+			emit_checked_shift(b, m, op, plan)
 			return true
 		}
 		strings.write_string(b, "    ")
-		write_value_ref(b, m, op.dst)
+		write_value_ref(b, m, op.dst, plan)
 		strings.write_string(b, " = (")
 		if mir_unsigned(op.type) {
-			write_unsigned_operand(b, m, op.a, op.type)
+			write_unsigned_operand(b, m, op.a, op.type, plan)
 		} else {
-			write_value_ref(b, m, op.a)
+			write_value_ref(b, m, op.a, plan)
 		}
 		if op.bin_op == .And_Not {
 			strings.write_string(b, " & ~(")
 			if mir_unsigned(op.type) {
-				write_unsigned_operand(b, m, op.b, op.type)
+				write_unsigned_operand(b, m, op.b, op.type, plan)
 			} else {
-				write_value_ref(b, m, op.b)
+				write_value_ref(b, m, op.b, plan)
 			}
 			strings.write_string(b, ")")
 		} else {
@@ -159,9 +166,9 @@ emit_mir_inst :: proc(
 			write_binary_op(b, op.bin_op)
 			strings.write_string(b, " ")
 			if mir_unsigned(op.type) {
-				write_unsigned_operand(b, m, op.b, op.type)
+				write_unsigned_operand(b, m, op.b, op.type, plan)
 			} else {
-				write_value_ref(b, m, op.b)
+				write_value_ref(b, m, op.b, plan)
 			}
 		}
 		strings.write_string(b, ");\n")
@@ -170,35 +177,35 @@ emit_mir_inst :: proc(
 		type_name, ok := mir_c_type(op.type)
 		if !ok do return false
 		strings.write_string(b, "    ")
-		write_value_ref(b, m, op.dst)
+		write_value_ref(b, m, op.dst, plan)
 		strings.write_string(b, " = (")
 		strings.write_string(b, type_name)
 		strings.write_string(b, ")(")
-		write_value_ref(b, m, op.a)
+		write_value_ref(b, m, op.a, plan)
 		strings.write_string(b, ");\n")
 
 	case .Load_Index:
 		strings.write_string(b, "    ")
-		write_value_ref(b, m, op.dst)
+		write_value_ref(b, m, op.dst, plan)
 		strings.write_string(b, " = ")
-		write_value_ref(b, m, op.a)
+		write_value_ref(b, m, op.a, plan)
 		strings.write_string(b, "[")
-		write_value_ref(b, m, op.b)
+		write_value_ref(b, m, op.b, plan)
 		strings.write_string(b, "];\n")
 
 	case .Store_Index:
 		strings.write_string(b, "    ")
-		write_value_ref(b, m, op.dst)
+		write_value_ref(b, m, op.dst, plan)
 		strings.write_string(b, "[")
-		write_value_ref(b, m, op.a)
+		write_value_ref(b, m, op.a, plan)
 		strings.write_string(b, "] = ")
-		write_value_ref(b, m, op.b)
+		write_value_ref(b, m, op.b, plan)
 		strings.write_string(b, ";\n")
 
 	case .Call:
 		strings.write_string(b, "    ")
 		if op.dst != INVALID_VALUE {
-			write_value_ref(b, m, op.dst)
+			write_value_ref(b, m, op.dst, plan)
 			strings.write_string(b, " = ")
 		}
 		strings.write_string(b, m.procedures[int(op.callee)].name)
@@ -206,7 +213,7 @@ emit_mir_inst :: proc(
 		for i in 0..<int(op.args_count) {
 			if i > 0 do strings.write_string(b, ", ")
 			arg := m.call_args[int(op.args_first) + i]
-			write_value_ref(b, m, arg)
+			write_value_ref(b, m, arg, plan)
 		}
 		strings.write_string(b, ");\n")
 
@@ -229,19 +236,19 @@ emit_mir_inst :: proc(
 		false_fallthrough := c99_target_is_fallthrough(m, op.target_else, op_index)
 		if true_fallthrough {
 			strings.write_string(b, "    if (!(")
-			write_value_ref(b, m, op.a)
+			write_value_ref(b, m, op.a, plan)
 			strings.write_string(b, ")) goto ")
 			write_block_label(b, proc_id, op.target_else)
 			strings.write_string(b, ";\n")
 		} else if false_fallthrough {
 			strings.write_string(b, "    if (")
-			write_value_ref(b, m, op.a)
+			write_value_ref(b, m, op.a, plan)
 			strings.write_string(b, ") goto ")
 			write_block_label(b, proc_id, op.target)
 			strings.write_string(b, ";\n")
 		} else {
 			strings.write_string(b, "    if (")
-			write_value_ref(b, m, op.a)
+			write_value_ref(b, m, op.a, plan)
 			strings.write_string(b, ") goto ")
 			write_block_label(b, proc_id, op.target)
 			strings.write_string(b, "; else goto ")
@@ -256,7 +263,7 @@ emit_mir_inst :: proc(
 		strings.write_string(b, "    return")
 		if op.a != INVALID_VALUE {
 			strings.write_string(b, " ")
-			write_value_ref(b, m, op.a)
+			write_value_ref(b, m, op.a, plan)
 		}
 		strings.write_string(b, ";\n")
 	case:
@@ -265,11 +272,14 @@ emit_mir_inst :: proc(
 	return true
 }
 
-emit_mir_c99 :: proc(m: ^MIR_Module) -> (string, bool) {
+emit_mir_c99 :: proc(m: ^MIR_Module, expressions := false) -> (string, bool) {
 	b: strings.Builder
 	strings.builder_init(&b)
 	needs_label := c99_layout_needs_labels(m)
 	usage := mir_usage(m)
+	storage: C_Expression_Plan
+	plan: ^C_Expression_Plan
+	if expressions { storage = c_expr_plan(m); plan = &storage }
 
 	strings.write_string(&b, "/* generated by Bor MIR unity backend */\n")
 	strings.write_string(&b, "#include <limits.h>\n#include <stdbool.h>\n#include <stddef.h>\n#include <stdint.h>\n\n")
@@ -308,6 +318,7 @@ emit_mir_c99 :: proc(m: ^MIR_Module) -> (string, bool) {
 		for value_index in first..<last {
 			v := &m.values[value_index]
 			if v.kind != .Local && v.kind != .Temp do continue
+			if plan != nil && plan.inline_at[value_index] != 0 do continue
 			if usage.reads[value_index] == 0 && usage.writes[value_index] == 0 do continue
 			type_name, ok := mir_c_type(v.type)
 			if !ok do return "", false
@@ -329,7 +340,8 @@ emit_mir_c99 :: proc(m: ^MIR_Module) -> (string, bool) {
 		op_first := int(p.first_op)
 		op_last := op_first + int(p.op_count)
 		for op_index in op_first..<op_last {
-			if !emit_mir_inst(&b, m, proc_id, op_index, needs_label, &m.ops[op_index]) do return "", false
+			if plan != nil && plan.skip[op_index] do continue
+			if !emit_mir_inst(&b, m, proc_id, op_index, needs_label, &m.ops[op_index], plan) do return "", false
 		}
 		strings.write_string(&b, "}\n\n")
 	}

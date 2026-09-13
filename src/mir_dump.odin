@@ -8,6 +8,8 @@ mir_dump_type_name :: proc(t: MIR_Type) -> string {
 	case .Void:    return "void"
 	case .Bool:    return "bool"
 	case .U8:      return "u8"
+	case .U16:     return "u16"
+	case .U64:     return "u64"
 	case .U32:     return "u32"
 	case .UIntptr: return "uintptr"
 	case .U8_Ptr:  return "^u8"

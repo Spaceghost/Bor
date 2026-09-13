@@ -5,7 +5,7 @@ import "core:odin/parser"
 import "core:os"
 
 usage :: proc() {
-	fmt.eprintln("usage: bor <emit-c|emit-c-direct|emit-c-mir|emit-c-mir-raw|dump-mir|dump-mir-raw> <odin-package-directory> -o <output>")
+	fmt.eprintln("usage: bor <emit-c|emit-c-expr|dump-expr-plan|emit-c-direct|emit-c-mir|emit-c-mir-raw|dump-mir|dump-mir-raw> <odin-package-directory> -o <output>")
 }
 
 main :: proc() {
@@ -15,7 +15,7 @@ main :: proc() {
 	}
 
 	command := os.args[1]
-	if command != "emit-c" && command != "emit-c-direct" && command != "emit-c-mir" && command != "dump-mir" && command != "emit-c-mir-raw" && command != "dump-mir-raw" {
+	if command != "emit-c-expr" && command != "dump-expr-plan" && command != "emit-c" && command != "emit-c-direct" && command != "emit-c-mir" && command != "dump-mir" && command != "emit-c-mir-raw" && command != "dump-mir-raw" {
 		usage()
 		os.exit(2)
 	}
@@ -46,11 +46,14 @@ main :: proc() {
 			_ = mir_optimize(&m)
 			if !mir_verify(&m) do os.exit(1)
 		}
-		if command == "dump-mir" || command == "dump-mir-raw" {
+		if command == "dump-expr-plan" {
+			generated = c_expr_dump_plan(&m)
+			emitted = true
+		} else if command == "dump-mir" || command == "dump-mir-raw" {
 			generated = mir_dump(&m)
 			emitted = true
 		} else {
-			generated, emitted = emit_mir_c99(&m)
+			generated, emitted = emit_mir_c99(&m, expressions = command == "emit-c-expr")
 		}
 	} else {
 		generated, emitted = emit_c99(pkg)

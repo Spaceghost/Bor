@@ -53,7 +53,7 @@ Export linkage is independent of calling convention. Unsupported ABI attributes 
 
 ## What this slice exercises
 
-The fixtures cover `u8`, `u32`, `uintptr`, `bool`, byte multi-pointers, scalar casts, direct calls, `@(export)`, C/contextless procedures, scoped locals, zero initialization, assignments, unsigned arithmetic, bit operations, conditionals, short-circuit expressions, bounded ranges, and returns.
+The fixtures cover `u8`, `u16`, `u32`, `u64`, `uintptr`, `bool`, byte multi-pointers, scalar casts, direct calls, `@(export)`, C/contextless procedures, scoped locals, zero initialization, assignments, unsigned arithmetic, bit operations, conditionals, short-circuit expressions, bounded ranges, and returns.
 
 The semantic audit specifically checks nested argument lists, left-to-right call effects, shadow restoration, all-branches-return control flow, byte-width intermediate arithmetic, oversized shifts, source integer spellings, dynamically reevaluated range bounds, and inclusive ranges ending at the maximum integer value.
 
@@ -65,9 +65,9 @@ This is **not** a full type checker or an implementation of signed arithmetic, a
 
 `make test` keeps the original 15 native/direct/MIR executable controls. `make unit` exercises MIR verification and the copy-fusion guards. `make audit` adds:
 
-- A deterministic **Odin-written generator**: 128 procedures, 256 input pairs per seed, two runtime input seeds.
-- Exact native-Odin output comparison against raw and optimized MIR under GCC and Clang at `-O0` and `-O3`, plus optimized AddressSanitizer/UndefinedBehaviorSanitizer builds.
-- **655,360 generated result comparisons** across those ten variants. This is a bounded corpus, not 655,360 independent language features or proof of complete correctness.
+- A deterministic **Odin-written generator**: 256 procedures, 256 input pairs per seed, two runtime input seeds.
+- Exact native-Odin output comparison against raw, optimized and expression-reconstructed MIR under GCC and Clang at `-O0` and `-O3`, plus optimized AddressSanitizer/UndefinedBehaviorSanitizer builds.
+- **2,097,152 generated result comparisons** across those sixteen variants. This is a bounded corpus, not 2,097,152 independent language features or proof of complete correctness.
 - Rejection cases checked against native Odin, including immutable parameters, argument/return types, scope escape, duplicate declarations, malformed syntax, and constant overflow. Failure must preserve an existing output file.
 
 Every process has a timeout. Oracle success and the exact expected output length are required before a comparison can pass. Failed or empty executions cannot qualify as agreement.
@@ -84,14 +84,14 @@ Codin is an independent executable reference where its implemented surface overl
 
 ## Next milestones
 
-The next language ladder is a real address/lvalue model, structs and fixed arrays, enums, slices/strings, multiple returns and `defer`, unions, imports/runtime integration, and generics. Each addition needs positive, negative, and differential fixtures before becoming supported.
+The next language ladder is signed and floating-point types, general addresses and aggregate lvalues, structs and fixed arrays, enums, slices/strings, multiple returns, broader deferred-cleanup interactions, unions, imports/runtime integration, and generics. Each addition needs positive, negative, and differential fixtures before becoming supported.
 
 The Graal/Sulong inspiration is an inspectable semantic representation shared by execution, optimization, and tooling. Borr currently emits C ahead of time. It does not contain a JIT, Truffle integration, speculative optimization, or a self-hosting compiler.
 
 ## Native and C toolchain matrix
 
 `make matrix` adds native Odin, native Zig ReleaseFast/ReleaseSafe, algorithm-matched
-C, and optimized lookup-table C alongside the three Borr paths and pinned Codin.
+C, and optimized lookup-table C alongside the three Borr strategies, the raw-MIR control, and pinned Codin.
 GCC, Clang, zig-cc, and TinyCC occupy separate columns. Native rows keep their
 language-generated object fixed and vary only the link driver.
 
@@ -99,3 +99,27 @@ Open `build/matrix/index.html` for an offline side-by-side source/assembly brows
 workload selectors, timings, code sizes, flags, and provenance. Raw JSON, commands,
 objects, and correctness diagnostics are retained in CI artifacts.
 See [matrix methodology and reproduction](docs/toolchain-matrix.md).
+
+## Three strategies against native Odin
+
+`make completeness` runs the versioned language-feature corpus against native
+Odin before comparing direct AST-to-C, flat MIR-to-C, and the new checked
+expression-reconstruction backend. Raw unoptimized MIR remains a fourth control.
+
+```sh
+./build/bor emit-c-expr test/semantics -o build/expressions.c
+./build/bor dump-expr-plan test/semantics -o build/expressions.plan
+make completeness
+make matrix
+```
+
+The third backend reconstructs single-use pure expression trees from verified
+MIR, with a depth bound, explicit width conversions, and barriers at calls,
+loads, stores, mutable writes and control flow. It does not copy AST guesses
+back into the checked pipeline. The main `emit-c` default remains flat MIR.
+
+The completeness report retains unsupported features, compile errors, wrong
+results, crashes, timeouts and invalid programs accepted. Its counts describe
+the pinned corpus, **not a percentage of Odin implemented**. Both checked paths
+share a lowerer, so their mutual agreement is never treated as an independent
+semantic oracle. See [the completeness contract](docs/completeness.md).

@@ -3,6 +3,8 @@ package main
 unsigned_limit :: proc(t: MIR_Type) -> u64 {
 	#partial switch t {
 	case .U8: return 255
+	case .U16: return 65535
+	case .U64: return max(u64)
 	case .U32: return 0xffff_ffff
 	case .UIntptr: return u64(max(uintptr))
 	}

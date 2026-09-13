@@ -64,6 +64,8 @@ range_index_type :: proc(l: ^Lowerer, expr: ^ast.Expr) -> MIR_Type {
 unsigned_max_text :: proc(t: MIR_Type) -> string {
 	#partial switch t {
 	case .U8: return "UINT8_MAX"
+	case .U16: return "UINT16_MAX"
+	case .U64: return "UINT64_MAX"
 	case .U32: return "UINT32_MAX"
 	case .UIntptr: return "UINTPTR_MAX"
 	}
@@ -76,9 +78,14 @@ validate_proc_contract :: proc(l: ^Lowerer, d: ^ast.Value_Decl, p: ^ast.Proc_Lit
 	if cc != "c" && cc != "cdecl" && cc != "contextless" do return lower_fail(l, &p.node, "only c/cdecl/contextless procedures are implemented")
 	if p.body == nil do return lower_fail(l, &p.node, "foreign procedures are not implemented")
 	if len(p.where_clauses) != 0 do return lower_fail(l, &p.node, "where clauses are not implemented")
+	if p.type.params != nil {
+		for field in p.type.params.list {
+			if field.default_value != nil || field.flags != {} do return lower_fail(l, &p.node, "default or attributed parameters are not implemented")
+		}
+	}
 	if p.type.results != nil {
 		for field in p.type.results.list {
-			if len(field.names) > 1 do return lower_fail(l, &p.node, "multiple named returns are not implemented")
+			if len(field.names) > 0 do return lower_fail(l, &p.node, "multiple named returns are not implemented")
 		}
 	}
 	for attribute in d.attributes {
@@ -88,4 +95,26 @@ validate_proc_contract :: proc(l: ^Lowerer, d: ^ast.Value_Decl, p: ^ast.Proc_Lit
 		}
 	}
 	return true
+}
+
+// Untyped integer/rune locals default to signed Odin types, not uintptr.
+// Until those types are implemented, reject rather than silently substitute
+// unsigned arithmetic. Explicit casts and typed operands establish their type.
+defaults_to_signed_integer :: proc(expr: ^ast.Expr) -> bool {
+	if expr == nil do return false
+	#partial switch n in expr.derived {
+	case ^ast.Basic_Lit:
+		return n.tok.kind == .Integer || n.tok.kind == .Rune
+	case ^ast.Paren_Expr:
+		return defaults_to_signed_integer(n.expr)
+	case ^ast.Unary_Expr:
+		return n.op.text != "!" && defaults_to_signed_integer(n.expr)
+	case ^ast.Binary_Expr:
+		op, valid := binary_op(n.op.text)
+		if !valid || op >= .Equal do return false
+		return defaults_to_signed_integer(n.left) && defaults_to_signed_integer(n.right)
+	case ^ast.Ternary_If_Expr:
+		return defaults_to_signed_integer(n.x) && defaults_to_signed_integer(n.y)
+	}
+	return false
 }

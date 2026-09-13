@@ -53,9 +53,9 @@ main :: proc() {
 	strings.builder_init(&g.out)
 	defer strings.builder_destroy(&g.out)
 	strings.write_string(&g.out, "package generated\n\n")
-	COUNT :: 128
+	COUNT :: 256
 	for i in 0..<COUNT {
-		g.type_name = i < COUNT/2 ? "u32" : "u8"
+		g.type_name = i < 64 ? "u32" : i < 128 ? "u8" : i < 192 ? "u16" : "u64"
 		fmt.sbprintf(&g.out, "@(export)\nf_%d :: proc \"c\" (x, y: u32) -> u32 {{\n", i)
 		fmt.sbprintf(&g.out, "\ta := %s(x)\n\tb := %s(y)\n\tc := %s(%d)\n\treturn u32(", g.type_name, g.type_name, g.type_name, next(&g) % 128)
 		expression(&g, 5)
@@ -76,5 +76,5 @@ main :: proc() {
 	fmt.sbprintf(&h, "for (unsigned i=0; i<%d; ++i) {{\nuint32_t value=functions[i](x,y);\nif(fwrite(&value,sizeof(value),1,stdout)!=1) return 1;\n}}\n}}\nreturn 0;\n}}\n", COUNT)
 	host := strings.to_string(h)
 	if err := os.write_entire_file(fmt.tprintf("%s/host.c", os.args[1]), transmute([]u8)host); err != nil do os.exit(1)
-	fmt.println("generated 128 procedures, 256 input pairs, seed 0xB0772026")
+	fmt.println("generated 256 procedures, 256 input pairs, seed 0xB0772026")
 }

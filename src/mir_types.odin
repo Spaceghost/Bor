@@ -3,7 +3,7 @@ package main
 import "core:strconv"
 
 mir_unsigned :: proc(t: MIR_Type) -> bool {
-	return t == .U8 || t == .U32 || t == .UIntptr
+	return t == .U8 || t == .U16 || t == .U64 || t == .U32 || t == .UIntptr
 }
 
 mir_literal_number :: proc(text: string) -> (u64, bool) {
@@ -49,6 +49,8 @@ mir_assignable :: proc(m: ^MIR_Module, id: Value_ID, target: MIR_Type) -> bool {
 	if !ok do return false
 	#partial switch target {
 	case .U8: return n <= 255
+	case .U16: return n <= 65535
+	case .U64: return true
 	case .U32: return n <= 0xffff_ffff
 	case .UIntptr: return n <= u64(max(uintptr))
 	}

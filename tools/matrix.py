@@ -139,7 +139,7 @@ class Matrix:
                 self.report["versions"][name] = "unavailable: "+str(error)
         sources = {"c-scalar": ROOT/"bench/baselines/scalar.c", "c-lut": ROOT/"bench/baselines/lut.c"}
         emitters = {}
-        for name, mode in (("bor-direct","emit-c-direct"),("bor-raw","emit-c-mir-raw"),("bor-optimized","emit-c")):
+        for name, mode in (("bor-direct","emit-c-direct"),("bor-raw","emit-c-mir-raw"),("bor-optimized","emit-c"),("bor-expression","emit-c-expr")):
             sources[name] = self.out / (name+".c")
             emitters[name] = [str(ROOT/"build/bor"), mode, str(ROOT/"test/melodica"), "-o",str(sources[name])]
         if self.args.codin:
