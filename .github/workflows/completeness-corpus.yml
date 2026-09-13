@@ -14,36 +14,54 @@ concurrency:
 
 env:
   ODIN_VERSION: dev-2026-09
-  ODIN_SHA256: 167c3e1d7056419dad2e04bb3bd98715b7ff286d4c125f3c5a5ee337c6254283
+  ODIN_AMD64_SHA256: 167c3e1d7056419dad2e04bb3bd98715b7ff286d4c125f3c5a5ee337c6254283
+  ODIN_ARM64_SHA256: c150c6f2d13668f3a1c4116ef96ea85c1ba1c9ededfd76081cd3c7d4ba92aa91
   ODIN_EXAMPLES_SHA: f1aba9aa1f4ab64c874b0944344a5cd3257f1a54
   ROSETTA_SHA: 4f4f759a78eebfcfdb65e4a7e2f8c33a6e40092d
 
 jobs:
   corpus:
     # Trusted push/workflow-dispatch only. Keep public PR code off private runners.
-    runs-on: [self-hosted, linux, x64]
+    runs-on: [self-hosted, linux]
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
 
-      - name: Install pinned Odin
+      - name: Install checksum-verified Odin for runner architecture
         shell: bash
         run: |
           set -euo pipefail
-          curl -fsSL --retry 3 "https://github.com/odin-lang/Odin/releases/download/${ODIN_VERSION}/odin-linux-amd64-${ODIN_VERSION}.tar.gz" -o "$RUNNER_TEMP/odin.tar.gz"
-          echo "$ODIN_SHA256  $RUNNER_TEMP/odin.tar.gz" | sha256sum -c -
+          case "$(uname -m)" in
+            x86_64|amd64)
+              odin_arch=amd64
+              odin_sha="$ODIN_AMD64_SHA256"
+              ;;
+            aarch64|arm64)
+              odin_arch=arm64
+              odin_sha="$ODIN_ARM64_SHA256"
+              ;;
+            *)
+              echo "unsupported self-hosted architecture: $(uname -m)" >&2
+              exit 1
+              ;;
+          esac
+          archive="odin-linux-${odin_arch}-${ODIN_VERSION}.tar.gz"
+          curl -fsSL --retry 3 "https://github.com/odin-lang/Odin/releases/download/${ODIN_VERSION}/${archive}" -o "$RUNNER_TEMP/odin.tar.gz"
+          echo "$odin_sha  $RUNNER_TEMP/odin.tar.gz" | sha256sum -c -
           rm -rf "$RUNNER_TEMP/odin"
           mkdir -p "$RUNNER_TEMP/odin"
           tar -xzf "$RUNNER_TEMP/odin.tar.gz" -C "$RUNNER_TEMP/odin" --strip-components=1
           echo "$RUNNER_TEMP/odin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/odin/odin" version
 
       - name: Build Bor and competitors from canonical master
         shell: bash
         run: |
           set -euxo pipefail
           odin build src -out:build/bor -o:speed
+          rm -rf "$RUNNER_TEMP/codin" "$RUNNER_TEMP/thor"
           git clone --depth 1 --branch master https://github.com/Spaceghost/codin.git "$RUNNER_TEMP/codin"
           make -C "$RUNNER_TEMP/codin" -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)"
           git clone --depth 1 --branch master https://github.com/Spaceghost/Thor.git "$RUNNER_TEMP/thor"
@@ -53,6 +71,7 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+          rm -rf "$RUNNER_TEMP/odin-examples" "$RUNNER_TEMP/rosetta"
           git clone https://github.com/odin-lang/examples.git "$RUNNER_TEMP/odin-examples"
           git -C "$RUNNER_TEMP/odin-examples" checkout --detach "$ODIN_EXAMPLES_SHA"
           git clone https://github.com/eterps/odin_rosettacode.git "$RUNNER_TEMP/rosetta"
